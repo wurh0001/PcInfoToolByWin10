@@ -1,0 +1,53 @@
+# CMake generated files
+/build/
+/out/
+/cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+
+# Visual Studio generated files
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+**/Debug/
+**/Release/
+**/RelWithDebInfo/
+**/MinSizeRel/
+**/x64/
+**/x86/
+*.obj
+*.o
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.idb
+*.ipch
+*.tlog
+
+# Generated project files
+*.vcxproj
+*.vcxproj.filters
+*.sln
+
+# Runtime and diagnostic files
+*.log
+crash.log
+
+# Temporary and editor files
+*.tmp
+*.temp
+*.bak
+*.swp
+Thumbs.db
+.DS_Store
