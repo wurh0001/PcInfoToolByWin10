@@ -270,6 +270,11 @@ void MetricsCollector::Impl::UpdateMemory() {
         snapshot.totalPhysMem = memStatus.ullTotalPhys;
         snapshot.availPhysMem = memStatus.ullAvailPhys;
         snapshot.usedPhysMem = memStatus.ullTotalPhys - memStatus.ullAvailPhys;
+
+        snapshot.memoryHistory.push_back(snapshot.memoryUsagePercent);
+        if (snapshot.memoryHistory.size() > kMaxHistory) {
+            snapshot.memoryHistory.erase(snapshot.memoryHistory.begin());
+        }
     }
 }
 
@@ -342,6 +347,11 @@ void MetricsCollector::Impl::UpdateGpu() {
 
     std::lock_guard<std::mutex> lock(mutex);
     snapshot.gpuUsagePercent = gpuVal;
+
+    snapshot.gpuHistory.push_back(gpuVal);
+    if (snapshot.gpuHistory.size() > kMaxHistory) {
+        snapshot.gpuHistory.erase(snapshot.gpuHistory.begin());
+    }
 }
 
 // 读取活动网卡累计字节数，并根据时间差计算上传下载速度。
@@ -376,6 +386,11 @@ void MetricsCollector::Impl::UpdateNetwork() {
                 snapshot.downloadHistory.push_back(static_cast<float>(snapshot.downloadSpeedBps));
                 if (snapshot.downloadHistory.size() > kMaxHistory) {
                     snapshot.downloadHistory.erase(snapshot.downloadHistory.begin());
+                }
+
+                snapshot.uploadHistory.push_back(static_cast<float>(snapshot.uploadSpeedBps));
+                if (snapshot.uploadHistory.size() > kMaxHistory) {
+                    snapshot.uploadHistory.erase(snapshot.uploadHistory.begin());
                 }
             }
         }
