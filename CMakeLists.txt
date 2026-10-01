@@ -45,3 +45,14 @@ target_link_libraries(PcInfoTool PRIVATE
     shell32    # Windows Shell：系统 Shell 相关功能。
     pdh        # Performance Data Helper：读取 CPU 等性能计数器。
 )
+
+# 编译性能测试工具 test_performance.exe 到 test 目录
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_perf.cpp")
+    add_executable(test_performance "test/test_perf.cpp")
+    target_link_libraries(test_performance PRIVATE psapi)
+    set_target_properties(test_performance PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/test"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    )
+endif()
+

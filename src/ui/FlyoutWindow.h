@@ -39,7 +39,7 @@ private:
     void DrawWaveform(
         ID2D1DCRenderTarget* rt,
         float chartX, float chartY, float chartW, float chartH,
-        const std::vector<float>& history,
+        const MetricHistory& history,
         float maxVal,
         D2D1_COLOR_F strokeCol,
         ID2D1Brush* gridBrush,

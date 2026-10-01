@@ -253,11 +253,7 @@ void MetricsCollector::Impl::UpdateCpu() {
     std::lock_guard<std::mutex> lock(mutex);
     snapshot.cpuUsageTotal = total;
     snapshot.cpuCoreUsage = cores;
-
-    snapshot.cpuHistory.push_back(total);
-    if (snapshot.cpuHistory.size() > kMaxHistory) {
-        snapshot.cpuHistory.erase(snapshot.cpuHistory.begin());
-    }
+    snapshot.cpuHistory.Push(total);
 }
 
 // 读取物理内存总量、可用量和当前使用率。
@@ -270,11 +266,7 @@ void MetricsCollector::Impl::UpdateMemory() {
         snapshot.totalPhysMem = memStatus.ullTotalPhys;
         snapshot.availPhysMem = memStatus.ullAvailPhys;
         snapshot.usedPhysMem = memStatus.ullTotalPhys - memStatus.ullAvailPhys;
-
-        snapshot.memoryHistory.push_back(snapshot.memoryUsagePercent);
-        if (snapshot.memoryHistory.size() > kMaxHistory) {
-            snapshot.memoryHistory.erase(snapshot.memoryHistory.begin());
-        }
+        snapshot.memoryHistory.Push(snapshot.memoryUsagePercent);
     }
 }
 
@@ -347,11 +339,7 @@ void MetricsCollector::Impl::UpdateGpu() {
 
     std::lock_guard<std::mutex> lock(mutex);
     snapshot.gpuUsagePercent = gpuVal;
-
-    snapshot.gpuHistory.push_back(gpuVal);
-    if (snapshot.gpuHistory.size() > kMaxHistory) {
-        snapshot.gpuHistory.erase(snapshot.gpuHistory.begin());
-    }
+    snapshot.gpuHistory.Push(gpuVal);
 }
 
 // 读取活动网卡累计字节数，并根据时间差计算上传下载速度。
@@ -383,15 +371,8 @@ void MetricsCollector::Impl::UpdateNetwork() {
                 snapshot.downloadSpeedBps = static_cast<uint64_t>(static_cast<double>(inDiff) / elapsedSec);
                 snapshot.uploadSpeedBps = static_cast<uint64_t>(static_cast<double>(outDiff) / elapsedSec);
 
-                snapshot.downloadHistory.push_back(static_cast<float>(snapshot.downloadSpeedBps));
-                if (snapshot.downloadHistory.size() > kMaxHistory) {
-                    snapshot.downloadHistory.erase(snapshot.downloadHistory.begin());
-                }
-
-                snapshot.uploadHistory.push_back(static_cast<float>(snapshot.uploadSpeedBps));
-                if (snapshot.uploadHistory.size() > kMaxHistory) {
-                    snapshot.uploadHistory.erase(snapshot.uploadHistory.begin());
-                }
+                snapshot.downloadHistory.Push(static_cast<float>(snapshot.downloadSpeedBps));
+                snapshot.uploadHistory.Push(static_cast<float>(snapshot.uploadSpeedBps));
             }
         }
 

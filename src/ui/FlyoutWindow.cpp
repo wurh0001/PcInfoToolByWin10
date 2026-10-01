@@ -73,10 +73,12 @@ void FlyoutWindow::ShowNear(const RECT& anchorRect) {
     Render();
 }
 
-// 隐藏详情窗口，但保留窗口和渲染资源以便下次快速显示。
+// 隐藏详情窗口，释放工作集并保留窗口和渲染资源以便下次快速显示。
 void FlyoutWindow::Hide() {
     m_visible = false;
     ShowWindow(m_hwnd, SW_HIDE);
+    // 详情卡片收起后立即释放临时 Direct2D 表面缓存工作集
+    SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
 }
 
 // 设置浅色或深色模式，并在弹窗可见时立即重绘。
@@ -200,7 +202,7 @@ void FlyoutWindow::DrawDiskIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1
 void FlyoutWindow::DrawWaveform(
     ID2D1DCRenderTarget* rt,
     float chartX, float chartY, float chartW, float chartH,
-    const std::vector<float>& history,
+    const MetricHistory& history,
     float maxVal,
     D2D1_COLOR_F strokeCol,
     ID2D1Brush* gridBrush,
@@ -247,7 +249,7 @@ void FlyoutWindow::DrawWaveform(
     }
 
     // 2. Waveform Geometry & Fill
-    size_t count = history.size();
+    size_t count = history.Size();
     if (count < 2 || !m_renderer.GetD2DFactory()) return;
 
     float step = plotW / 59.0f;
@@ -320,7 +322,7 @@ void FlyoutWindow::DrawWaveform(
         }
 
         // 4. Live Current Beacon Point with white core & glowing halo
-        float lastPct = std::clamp(history.back() / maxVal, 0.0f, 1.0f);
+        float lastPct = std::clamp(history.Back() / maxVal, 0.0f, 1.0f);
         float lastX = startHistX + (count - 1) * step;
         float lastY = chartY + chartH - (lastPct * (chartH - 6.0f)) - 3.0f;
 
@@ -633,11 +635,13 @@ void FlyoutWindow::DrawNetworkSection(ID2D1DCRenderTarget* rt, float& curY, floa
 
     // Calculate dynamic auto-scaling upper bound for Download & Upload
     float maxDown = 1024.0f * 1024.0f; // Minimum scale: 1 MB/s
-    for (float val : m_snapshot.downloadHistory) {
+    for (size_t i = 0; i < m_snapshot.downloadHistory.Size(); ++i) {
+        float val = m_snapshot.downloadHistory[i];
         if (val > maxDown) maxDown = val;
     }
     float maxUp = 512.0f * 1024.0f; // Minimum scale: 512 KB/s
-    for (float val : m_snapshot.uploadHistory) {
+    for (size_t i = 0; i < m_snapshot.uploadHistory.Size(); ++i) {
+        float val = m_snapshot.uploadHistory[i];
         if (val > maxUp) maxUp = val;
     }
 

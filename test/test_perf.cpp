@@ -57,8 +57,10 @@ int main(int argc, char* argv[]) {
         
         STARTUPINFOW si = { sizeof(STARTUPINFOW) };
         PROCESS_INFORMATION pi = {};
-        wchar_t cmd[] = L"..\\build\\Release\\PcInfoTool.exe";
-        if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        wchar_t cmd1[] = L"..\\build\\Release\\PcInfoTool.exe";
+        wchar_t cmd2[] = L"build\\Release\\PcInfoTool.exe";
+        if (CreateProcessW(NULL, cmd1, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi) ||
+            CreateProcessW(NULL, cmd2, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
             Sleep(1500);
