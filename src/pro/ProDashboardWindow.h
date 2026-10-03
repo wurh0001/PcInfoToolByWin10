@@ -4,6 +4,7 @@
 #include "../core/MetricsSnapshot.h"
 #include <vector>
 #include <functional>
+#include <algorithm>
 
 class ProDashboardWindow {
 public:
@@ -68,6 +69,24 @@ public:
     void SetPinned(bool pin);
     void ExpandModule(AccordionModule mod);
     void SetOnSettingsChanged(std::function<void(const SettingsState&)> cb) { m_onSettingsChanged = cb; }
+
+    // 分层材质透明度映射 (Material Layering Hierarchy)
+    // t: 0.10f ~ 1.00f (默认 0.40f)
+    float GetMiniBarBgAlpha() const {
+        if (m_settings.reduceTransparency) return 0.95f;
+        float t = std::clamp(m_settings.glassOpacity, 0.10f, 1.00f);
+        return std::clamp(0.20f + t * 0.60f, 0.25f, 0.85f); // 默认 40% 滑块对应 0.44f
+    }
+    float GetDashboardBgAlpha() const {
+        if (m_settings.reduceTransparency) return 0.96f;
+        float t = std::clamp(m_settings.glassOpacity, 0.10f, 1.00f);
+        return std::clamp(0.60f + t * 0.35f, 0.60f, 0.96f); // 默认 40% 滑块对应 0.74f (扎实半透)
+    }
+    float GetTooltipBgAlpha() const {
+        if (m_settings.reduceTransparency) return 0.95f;
+        float t = std::clamp(m_settings.glassOpacity, 0.10f, 1.00f);
+        return std::clamp(0.70f + t * 0.25f, 0.70f, 0.95f); // 默认 40% 滑块对应 0.80f (轻灵透澈)
+    }
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);

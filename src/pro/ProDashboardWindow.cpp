@@ -52,11 +52,11 @@ void ProDashboardWindow::EnsureBrushes(ID2D1DCRenderTarget* rt) {
     if (m_pBgBrush) return;
 
     // Light frosted glass palette matching Figma tokens (pro-v1-design-tokens.json)
-    // 窗口外壳半透柔和磨砂底色，透明度遵循偏好设置（保持文字与图表 100% 不透明）
-    float bgAlpha = m_settings.reduceTransparency ? 0.95f : std::clamp(m_settings.glassOpacity, 0.10f, 1.00f);
+    // 窗口外壳半透柔和磨砂底色，透明度按分层材质模型计算（大面板保持 60%~96% 安全半透衬底，文字 100% 不透明）
+    float bgAlpha = GetDashboardBgAlpha();
     rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, bgAlpha), &m_pBgBrush);           // Translucent frosted window bg #FFFFFF
     rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.85f), &m_pBorderBrush);       // Border #FFFFFF alpha 85%
-    rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, std::min(1.0f, bgAlpha + 0.15f)), &m_pCardBgBrush);         // Translucent surface card
+    rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, std::min(0.98f, bgAlpha + 0.12f)), &m_pCardBgBrush);         // Translucent surface card
     rt->CreateSolidColorBrush(D2D1::ColorF(0.780f, 0.820f, 0.875f, 0.70f), &m_pCardBorderBrush);// Card Border #C2CBD9
     rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.85f), &m_pCardHoverBrush);      // Hover white card
 
@@ -4148,8 +4148,8 @@ void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, floa
     // Drop shadow: X=0, Y=8, Blur=24, #26385C alpha 10%
     rt->CreateSolidColorBrush(D2D1::ColorF(0.149f, 0.220f, 0.361f, 0.10f), &pShadowBrush);
 
-    // Panel background: #FFFFFF 40% (即透明度 60%), Border: #FFFFFF 85% 1 DIP
-    float effectiveAlpha = m_settings.reduceTransparency ? 0.95f : m_settings.glassOpacity;
+    // Panel background: #FFFFFF 半透磨砂，根据分层模型保持扎实可读性, Border: #FFFFFF 85% 1 DIP
+    float effectiveAlpha = GetDashboardBgAlpha();
     rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, effectiveAlpha), &pPanelBg);
     rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.85f), &pPanelBorder);
 

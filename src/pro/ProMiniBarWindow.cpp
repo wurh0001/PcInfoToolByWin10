@@ -21,8 +21,7 @@ ProMiniBarWindow::ProMiniBarWindow() {
         m_pDashboard->SetOnSettingsChanged([this](const ProDashboardWindow::SettingsState& s) {
             ReleaseBrushes();
             if (m_pTooltip) {
-                float tooltipAlpha = s.reduceTransparency ? 0.95f : s.glassOpacity;
-                m_pTooltip->SetOpacity(tooltipAlpha);
+                m_pTooltip->SetOpacity(m_pDashboard->GetTooltipBgAlpha());
             }
             Render();
         });
@@ -65,11 +64,7 @@ void ProMiniBarWindow::EnsureBrushes(ID2D1DCRenderTarget* rt) {
     if (m_pBgBrush) return;
 
     // Light frosted glass palette matching Figma tokens
-    float bgAlpha = 0.40f;
-    if (m_pDashboard) {
-        const auto& st = m_pDashboard->GetSettings();
-        bgAlpha = st.reduceTransparency ? 0.95f : std::clamp(st.glassOpacity, 0.10f, 1.00f);
-    }
+    float bgAlpha = m_pDashboard ? m_pDashboard->GetMiniBarBgAlpha() : 0.44f;
 
     rt->CreateSolidColorBrush(D2D1::ColorF(0.929f, 0.945f, 0.973f, bgAlpha), &m_pBgBrush);
     rt->CreateSolidColorBrush(D2D1::ColorF(0.761f, 0.796f, 0.851f, 0.85f), &m_pBorderBrush);
@@ -141,6 +136,9 @@ bool ProMiniBarWindow::Create() {
     }
     if (m_pTooltip) {
         m_pTooltip->Create(m_hwnd);
+        if (m_pDashboard) {
+            m_pTooltip->SetOpacity(m_pDashboard->GetTooltipBgAlpha());
+        }
     }
 
     m_collector.SetGpuEnabled(true);
