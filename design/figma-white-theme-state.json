@@ -1,0 +1,15 @@
+{
+  "fileKey": "otKVFJ24sjAu4gdtpvCMM7",
+  "scope": "Pure White theme of existing Pro V1 screens; preserve originals",
+  "step": "complete",
+  "pageId": "138:891",
+  "boards": ["138:892", "138:1391", "138:2077"],
+  "settingsPanelId": "138:2200",
+  "modeId": "137:0",
+  "collectionId": "VariableCollectionId:2:2",
+  "sourceBoards": ["21:629", "21:996", "33:1190"],
+  "primitives": ["VariableID:137:891", "VariableID:137:892", "VariableID:137:893", "VariableID:137:894", "VariableID:137:895"],
+  "styles": {"Panel": "S:74faa90021d821953c4ff3d284bf0462b4701a15,", "Peek": "S:9df54376a10eb8a932960765df933600390b1ed4,", "Bar": "S:b1930e501862f7abb747ea7c958fee271e5b6075,"},
+  "pending": [],
+  "validation": {"images": 0, "unexpectedFonts": 0, "visibleGlassEffects": 0, "visualReview": "three full boards reviewed after color-cache correction"}
+}

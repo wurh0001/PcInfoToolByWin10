@@ -98,6 +98,13 @@ bool MiniBarWindow::Create() {
     m_flyout.Create();
     // 让详情窗口使用与主监控条相同的主题预设。
     m_flyout.SetThemePreset(m_preset);
+    // 当详情窗口因点击叉号或失焦自动收起时，联动关闭 GPU 采集并回收工作集
+    m_flyout.SetHideCallback([](void* ctx) {
+        auto pThis = reinterpret_cast<MiniBarWindow*>(ctx);
+        if (pThis) {
+            pThis->m_collector.SetGpuEnabled(false);
+        }
+    }, this);
 
     // 根据初始位置判断窗口是否贴靠在屏幕边缘。
     UpdateDockState();
@@ -147,6 +154,7 @@ void MiniBarWindow::ToggleFlyout() {
     if (m_flyout.IsVisible()) {
         // 详情已打开：关闭详情；如果主条贴边且鼠标已经离开，则同时收起主条。
         m_flyout.Hide();
+        m_collector.SetGpuEnabled(false);
         // If docked and mouse is not over window, collapse back
         if (m_dockEdge != DockEdge::None && !m_isDragging) {
             POINT pt;
@@ -160,6 +168,7 @@ void MiniBarWindow::ToggleFlyout() {
         }
     } else {
         // 详情未打开：以主监控条为锚点，在其下方或上方显示详情窗口。
+        m_collector.SetGpuEnabled(true);
         RECT rc;
         GetWindowRect(m_hwnd, &rc);
         m_flyout.ShowNear(rc);

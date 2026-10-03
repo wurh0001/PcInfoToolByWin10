@@ -10,6 +10,8 @@ public:
     void Start();
     void Stop();
 
+    void SetGpuEnabled(bool enable);
+
     MetricsSnapshot GetLatestSnapshot();
 
 private:

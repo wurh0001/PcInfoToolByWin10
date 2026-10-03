@@ -23,6 +23,11 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo.
-echo [Success] Build finished: build\Release\PcInfoTool.exe
+echo ==========================================================
+echo [Success] All targets built successfully:
+echo   - Lite (Minimal):  build\Release\PcInfoTool-Lite.exe
+echo   - Pro  (Stats):    build\Release\PcInfoTool-Pro.exe
+echo   - Test Suite:      test\test_performance.exe
+echo ==========================================================
 cd ..
 endlocal

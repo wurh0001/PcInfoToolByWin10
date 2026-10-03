@@ -18,6 +18,10 @@ public:
     void UpdateSnapshot(const MetricsSnapshot& snapshot);
     void SetLightMode(bool lightMode);
     void SetThemePreset(Theme::ThemePreset preset);
+    void SetHideCallback(void (*callback)(void*), void* context) {
+        m_hideCallback = callback;
+        m_hideContext = context;
+    }
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -41,12 +45,68 @@ private:
         float chartX, float chartY, float chartW, float chartH,
         const MetricHistory& history,
         float maxVal,
+        ID2D1SolidColorBrush* strokeBrush,
+        ID2D1LinearGradientBrush* areaBrush,
         D2D1_COLOR_F strokeCol,
         ID2D1Brush* gridBrush,
         ID2D1Brush* textBrush,
         const wchar_t* scaleTopText = nullptr,
         const wchar_t* scaleMidText = nullptr
     );
+
+    struct FlyoutBrushPool {
+        ID2D1SolidColorBrush* pWindowBg = nullptr;
+        ID2D1SolidColorBrush* pWindowBorder = nullptr;
+        ID2D1SolidColorBrush* pCardBg = nullptr;
+        ID2D1SolidColorBrush* pCardBorder = nullptr;
+        ID2D1SolidColorBrush* pPillBg = nullptr;
+        ID2D1SolidColorBrush* pTextPrimary = nullptr;
+        ID2D1SolidColorBrush* pTextSecondary = nullptr;
+        ID2D1SolidColorBrush* pTextMuted = nullptr;
+        ID2D1SolidColorBrush* pTrackBg = nullptr;
+        ID2D1SolidColorBrush* pGridLine = nullptr;
+        ID2D1SolidColorBrush* pRamPurple = nullptr;
+        ID2D1SolidColorBrush* pNetDownGreen = nullptr;
+        ID2D1SolidColorBrush* pNetUpBlue = nullptr;
+        ID2D1SolidColorBrush* pGpuCyan = nullptr;
+        ID2D1SolidColorBrush* pDiskAmber = nullptr;
+        ID2D1SolidColorBrush* pWhiteCore = nullptr;
+        ID2D1SolidColorBrush* pGreenDotGlow = nullptr;
+        ID2D1SolidColorBrush* pHaloBrush = nullptr;
+
+        // Dynamic or color-varying brushes
+        ID2D1SolidColorBrush* pCpuLine = nullptr;
+        D2D1_COLOR_F lastCpuColor = { 0, 0, 0, 0 };
+
+        // Specular Rim Gradient Brush
+        ID2D1LinearGradientBrush* pGlassRim = nullptr;
+        ID2D1GradientStopCollection* pGlassStops = nullptr;
+
+        // Waveform Area Gradient Brushes & Stops
+        ID2D1LinearGradientBrush* pCpuGradBrush = nullptr;
+        ID2D1GradientStopCollection* pCpuGradStops = nullptr;
+        ID2D1LinearGradientBrush* pRamGradBrush = nullptr;
+        ID2D1GradientStopCollection* pRamGradStops = nullptr;
+        ID2D1LinearGradientBrush* pNetDownGradBrush = nullptr;
+        ID2D1GradientStopCollection* pNetDownGradStops = nullptr;
+        ID2D1LinearGradientBrush* pNetUpGradBrush = nullptr;
+        ID2D1GradientStopCollection* pNetUpGradStops = nullptr;
+        ID2D1LinearGradientBrush* pGpuGradBrush = nullptr;
+        ID2D1GradientStopCollection* pGpuGradStops = nullptr;
+
+        Theme::ThemePreset lastPreset = static_cast<Theme::ThemePreset>(-1);
+        bool lastLightMode = false;
+
+        void ReleaseAll();
+        void EnsureBrushes(
+            ID2D1DCRenderTarget* rt,
+            const Theme::Palette& pal,
+            float H,
+            bool isLightMode,
+            Theme::ThemePreset preset,
+            D2D1_COLOR_F cpuColor
+        );
+    };
 
 private:
     HWND m_hwnd = nullptr;
@@ -55,12 +115,17 @@ private:
     bool m_isLightMode = false;
     Theme::ThemePreset m_preset = Theme::ThemePreset::TranslucentGlass;
     MetricsSnapshot m_snapshot;
+    FlyoutBrushPool m_brushes;
+    int m_renderCount = 0;
 
-    // DIP dimensions matching the full-featured dashboard with GPU + Net charts
-    const float m_dipWidth = 330.0f;
+    // DIP dimensions matching the MiniBar width (345 DIP) for pixel-perfect alignment
+    const float m_dipWidth = 345.0f;
     const float m_dipHeight = 540.0f;
 
-    int m_pixelWidth = 330;
+    int m_pixelWidth = 345;
     int m_pixelHeight = 540;
     float m_dpiScale = 1.0f;
+
+    void (*m_hideCallback)(void*) = nullptr;
+    void* m_hideContext = nullptr;
 };

@@ -70,21 +70,34 @@ void LayeredD2DRenderer::InitTypography() {
     }
 }
 
-// 初始化透明分层窗口所需的 Direct2D、DirectWrite、DIB 和 DC 渲染目标。
+static ID2D1Factory* s_sharedD2DFactory = nullptr;
+static IDWriteFactory* s_sharedDWriteFactory = nullptr;
+static LONG s_rendererCount = 0;
+
 bool LayeredD2DRenderer::Initialize(HWND hwnd, int width, int height) {
     m_hwnd = hwnd;
     m_width = width;
     m_height = height;
 
-    HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &m_pD2DFactory);
-    if (FAILED(hr)) return false;
+    InterlockedIncrement(&s_rendererCount);
 
-    hr = DWriteCreateFactory(
-        DWRITE_FACTORY_TYPE_SHARED,
-        __uuidof(IDWriteFactory),
-        reinterpret_cast<IUnknown**>(&m_pDWriteFactory)
-    );
-    if (FAILED(hr)) return false;
+    if (!s_sharedD2DFactory) {
+        D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &s_sharedD2DFactory);
+    }
+    m_pD2DFactory = s_sharedD2DFactory;
+    if (m_pD2DFactory) m_pD2DFactory->AddRef();
+
+    if (!s_sharedDWriteFactory) {
+        DWriteCreateFactory(
+            DWRITE_FACTORY_TYPE_SHARED,
+            __uuidof(IDWriteFactory),
+            reinterpret_cast<IUnknown**>(&s_sharedDWriteFactory)
+        );
+    }
+    m_pDWriteFactory = s_sharedDWriteFactory;
+    if (m_pDWriteFactory) m_pDWriteFactory->AddRef();
+
+    if (!m_pD2DFactory || !m_pDWriteFactory) return false;
 
     InitTypography();
 
@@ -118,7 +131,7 @@ bool LayeredD2DRenderer::Initialize(HWND hwnd, int width, int height) {
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
     );
 
-    hr = m_pD2DFactory->CreateDCRenderTarget(&props, &m_pDCRenderTarget);
+    HRESULT hr = m_pD2DFactory->CreateDCRenderTarget(&props, &m_pDCRenderTarget);
     if (FAILED(hr) || !m_pDCRenderTarget) {
         return false;
     }
@@ -199,6 +212,11 @@ void LayeredD2DRenderer::Cleanup() {
     SafeRelease(m_pDCRenderTarget);
     SafeRelease(m_pDWriteFactory);
     SafeRelease(m_pD2DFactory);
+
+    if (InterlockedDecrement(&s_rendererCount) == 0) {
+        SafeRelease(s_sharedDWriteFactory);
+        SafeRelease(s_sharedD2DFactory);
+    }
 
     if (m_hOldBitmap && m_memDC) {
         SelectObject(m_memDC, m_hOldBitmap);

@@ -20,31 +20,76 @@ endif()
 # WIN32_LEAN_AND_MEAN：减少 Windows 头文件包含的内容，降低编译时间。
 add_definitions(-DUNICODE -D_UNICODE -DNOMINMAX -DWIN32_LEAN_AND_MEAN)
 
-# 递归查找 src 目录下的所有 C++ 源文件和头文件。
-# 查找到的文件列表保存在 SRC_FILES 变量中。
-file(GLOB_RECURSE SRC_FILES
-    "src/*.cpp"
-    "src/*.h"
+# ==========================================
+# 共享核心源文件 (Core + UI 基础渲染器)
+# ==========================================
+set(CORE_SOURCES
+    "src/core/MetricsCollector.cpp"
+    "src/core/MetricsCollector.h"
+    "src/core/MetricsSnapshot.h"
+    "src/core/ConfigManager.h"
+    "src/ui/LayeredD2DRenderer.cpp"
+    "src/ui/LayeredD2DRenderer.h"
+    "src/ui/AcrylicHelper.h"
+    "src/ui/DpiHelper.h"
+    "src/ui/Theme.h"
 )
 
-# 生成名为 PcInfoTool.exe 的 Windows GUI 程序。
-# WIN32 表示使用 Windows GUI 子系统，对应代码中的 wWinMain 入口函数。
-# ${SRC_FILES} 表示将前面找到的所有源文件加入目标。
-add_executable(PcInfoTool WIN32 ${SRC_FILES})
-
-# 为 PcInfoTool 链接 Windows 系统库。
-# PRIVATE 表示这些库只供 PcInfoTool 这个目标使用。
-target_link_libraries(PcInfoTool PRIVATE
-    d2d1       # Direct2D：绘制窗口背景、图形和曲线。
-    dwrite     # DirectWrite：绘制高质量文字。
-    dwmapi     # Desktop Window Manager：桌面窗口管理相关功能。
-    iphlpapi   # IP Helper API：读取网络适配器和网络流量信息。
-    user32     # Windows 窗口、消息、鼠标、菜单等基础 API。
-    gdi32      # GDI：设备上下文、位图等传统图形功能。
-    ole32      # COM：支持 COM 初始化和相关 Windows 组件。
-    shell32    # Windows Shell：系统 Shell 相关功能。
-    pdh        # Performance Data Helper：读取 CPU 等性能计数器。
+# 共享系统链接库
+set(SYSTEM_LIBS
+    d2d1
+    dwrite
+    dwmapi
+    iphlpapi
+    ws2_32
+    user32
+    gdi32
+    ole32
+    shell32
+    pdh
 )
+
+# ==========================================
+# 目标 1: PcInfoTool-Lite (原版成熟形态：紧凑吸附条 + 345px 概览波形卡片)
+# ==========================================
+set(LITE_SOURCES
+    ${CORE_SOURCES}
+    "src/ui/MiniBarWindow.cpp"
+    "src/ui/MiniBarWindow.h"
+    "src/ui/FlyoutWindow.cpp"
+    "src/ui/FlyoutWindow.h"
+    "src/ui/CustomContextMenu.cpp"
+    "src/ui/CustomContextMenu.h"
+    "src/main.cpp"
+)
+
+add_executable(PcInfoTool-Lite WIN32 ${LITE_SOURCES})
+target_link_libraries(PcInfoTool-Lite PRIVATE ${SYSTEM_LIBS})
+
+# 保持默认别名 PcInfoTool 也生成，方便兼容旧脚本
+add_executable(PcInfoTool WIN32 ${LITE_SOURCES})
+target_link_libraries(PcInfoTool PRIVATE ${SYSTEM_LIBS})
+
+# ==========================================
+# 目标 2: PcInfoTool-Pro (Mac Stats 风格专业版长条面板)
+# ==========================================
+set(PRO_SOURCES
+    ${CORE_SOURCES}
+    "src/ui/CustomContextMenu.cpp"
+    "src/ui/CustomContextMenu.h"
+    "src/pro/ProMiniBarWindow.cpp"
+    "src/pro/ProMiniBarWindow.h"
+    "src/pro/ProMiniBarTooltipWindow.cpp"
+    "src/pro/ProMiniBarTooltipWindow.h"
+    "src/pro/ProDashboardWindow.cpp"
+    "src/pro/ProDashboardWindow.h"
+    "src/pro/ProApp.h"
+    "src/pro/main_pro.cpp"
+)
+
+add_executable(PcInfoTool-Pro WIN32 ${PRO_SOURCES})
+target_link_libraries(PcInfoTool-Pro PRIVATE ${SYSTEM_LIBS})
+
 
 # 编译性能测试工具 test_performance.exe 到 test 目录
 if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_perf.cpp")

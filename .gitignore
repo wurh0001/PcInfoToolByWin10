@@ -44,6 +44,9 @@ CTestTestfile.cmake
 *.log
 crash.log
 
+# Test-generated screenshots
+/test/*.png
+
 # Temporary and editor files
 *.tmp
 *.temp

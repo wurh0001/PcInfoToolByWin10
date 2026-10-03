@@ -11,8 +11,9 @@
 // 构造详情弹窗对象；窗口和渲染资源在 Create 中创建。
 FlyoutWindow::FlyoutWindow() {}
 
-// 销毁详情窗口，渲染器成员随后自动释放图形资源。
+// 销毁详情窗口，释放画刷池，渲染器成员随后自动释放图形资源。
 FlyoutWindow::~FlyoutWindow() {
+    m_brushes.ReleaseAll();
     if (m_hwnd) {
         DestroyWindow(m_hwnd);
     }
@@ -52,18 +53,44 @@ bool FlyoutWindow::Create() {
 
 // 根据主监控条位置显示详情窗口，并在屏幕边缘自动调整位置。
 void FlyoutWindow::ShowNear(const RECT& anchorRect) {
-    int screenW = GetSystemMetrics(SM_CXSCREEN);
-    int screenH = GetSystemMetrics(SM_CYSCREEN);
+    if (!m_hwnd) return;
 
-    int x = anchorRect.left;
-    if (x + m_pixelWidth > screenW - 10) {
-        x = screenW - m_pixelWidth - 10;
+    // 根据锚点窗口所在显示器动态校准 DPI 与像素尺寸
+    float newScale = DpiHelper::GetScaleForWindow(m_hwnd);
+    if (newScale > 0.1f && (abs(newScale - m_dpiScale) > 0.01f || m_pixelWidth != DpiHelper::DipToPx(m_dipWidth, newScale))) {
+        m_dpiScale = newScale;
+        m_pixelWidth = DpiHelper::DipToPx(m_dipWidth, m_dpiScale);
+        m_pixelHeight = DpiHelper::DipToPx(m_dipHeight, m_dpiScale);
+        m_renderer.Resize(m_pixelWidth, m_pixelHeight);
+        m_brushes.ReleaseAll();
     }
-    if (x < 10) x = 10;
 
+    HMONITOR hMon = MonitorFromRect(&anchorRect, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { sizeof(MONITORINFO) };
+    RECT workArea = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    if (hMon && GetMonitorInfo(hMon, &mi)) {
+        workArea = mi.rcWork;
+    }
+
+    // 水平对齐：由于宽度统一为 345 DIP，直接与 MiniBar 左侧对齐；若超出屏幕右侧则向右侧边缘对齐
+    int x = anchorRect.left;
+    if (x + m_pixelWidth > workArea.right - 10) {
+        x = anchorRect.right - m_pixelWidth;
+    }
+    if (x + m_pixelWidth > workArea.right - 8) {
+        x = workArea.right - m_pixelWidth - 8;
+    }
+    if (x < workArea.left + 8) {
+        x = workArea.left + 8;
+    }
+
+    // 垂直对齐：优先显示在 MiniBar 下方，空间不足则显示在上方
     int y = anchorRect.bottom + 8;
-    if (y + m_pixelHeight > screenH - 10) {
+    if (y + m_pixelHeight > workArea.bottom - 8) {
         y = anchorRect.top - m_pixelHeight - 8;
+    }
+    if (y < workArea.top + 8) {
+        y = workArea.top + 8;
     }
 
     m_visible = true;
@@ -71,20 +98,31 @@ void FlyoutWindow::ShowNear(const RECT& anchorRect) {
     SetForegroundWindow(m_hwnd);
     SetActiveWindow(m_hwnd);
     Render();
+
+    // 展开首帧立即触发工作集修剪，抹平创建窗口表面和字形表的首帧瞬时波峰
+    SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
 }
 
 // 隐藏详情窗口，释放工作集并保留窗口和渲染资源以便下次快速显示。
 void FlyoutWindow::Hide() {
+    if (!m_visible) return;
     m_visible = false;
     ShowWindow(m_hwnd, SW_HIDE);
-    // 详情卡片收起后立即释放临时 Direct2D 表面缓存工作集
+    // 详情卡片收起后释放所有缓存的画刷，彻底还给 D2D 表面，并触发工作集整理
+    m_brushes.ReleaseAll();
+    m_renderCount = 0;
     SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+
+    if (m_hideCallback) {
+        m_hideCallback(m_hideContext);
+    }
 }
 
 // 设置浅色或深色模式，并在弹窗可见时立即重绘。
 void FlyoutWindow::SetLightMode(bool lightMode) {
     m_isLightMode = lightMode;
     m_preset = lightMode ? Theme::ThemePreset::GlacierWhite : Theme::ThemePreset::ObsidianDark;
+    m_brushes.ReleaseAll();
     if (m_visible && m_hwnd) {
         Render();
     }
@@ -94,6 +132,7 @@ void FlyoutWindow::SetLightMode(bool lightMode) {
 void FlyoutWindow::SetThemePreset(Theme::ThemePreset preset) {
     m_preset = preset;
     m_isLightMode = (preset == Theme::ThemePreset::GlacierWhite || preset == Theme::ThemePreset::AuroraGlass);
+    m_brushes.ReleaseAll();
     if (m_visible && m_hwnd) {
         Render();
     }
@@ -197,6 +236,166 @@ void FlyoutWindow::DrawDiskIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1
 }
 
 // -------------------------------------------------------------
+// COM 安全释放工具与波形渐变构建
+// -------------------------------------------------------------
+template <typename T>
+static inline void SafeReleaseCOM(T*& p) {
+    if (p) {
+        p->Release();
+        p = nullptr;
+    }
+}
+
+static void CreateWaveformGrad(
+    ID2D1DCRenderTarget* rt,
+    D2D1_COLOR_F color,
+    float topAlpha,
+    ID2D1GradientStopCollection** ppStops,
+    ID2D1LinearGradientBrush** ppBrush
+) {
+    if (!rt) return;
+    SafeReleaseCOM(*ppBrush);
+    SafeReleaseCOM(*ppStops);
+
+    D2D1_GRADIENT_STOP stops[2];
+    stops[0].color = D2D1::ColorF(color.r, color.g, color.b, topAlpha);
+    stops[0].position = 0.0f;
+    stops[1].color = D2D1::ColorF(color.r, color.g, color.b, 0.0f);
+    stops[1].position = 1.0f;
+
+    rt->CreateGradientStopCollection(stops, 2, ppStops);
+    if (*ppStops) {
+        rt->CreateLinearGradientBrush(
+            D2D1::LinearGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(0, 50.0f)),
+            *ppStops,
+            ppBrush
+        );
+    }
+}
+
+void FlyoutWindow::FlyoutBrushPool::ReleaseAll() {
+    SafeReleaseCOM(pWindowBg);
+    SafeReleaseCOM(pWindowBorder);
+    SafeReleaseCOM(pCardBg);
+    SafeReleaseCOM(pCardBorder);
+    SafeReleaseCOM(pPillBg);
+    SafeReleaseCOM(pTextPrimary);
+    SafeReleaseCOM(pTextSecondary);
+    SafeReleaseCOM(pTextMuted);
+    SafeReleaseCOM(pTrackBg);
+    SafeReleaseCOM(pGridLine);
+    SafeReleaseCOM(pRamPurple);
+    SafeReleaseCOM(pNetDownGreen);
+    SafeReleaseCOM(pNetUpBlue);
+    SafeReleaseCOM(pGpuCyan);
+    SafeReleaseCOM(pDiskAmber);
+    SafeReleaseCOM(pWhiteCore);
+    SafeReleaseCOM(pGreenDotGlow);
+    SafeReleaseCOM(pHaloBrush);
+
+    SafeReleaseCOM(pCpuLine);
+
+    SafeReleaseCOM(pGlassRim);
+    SafeReleaseCOM(pGlassStops);
+
+    SafeReleaseCOM(pCpuGradBrush);
+    SafeReleaseCOM(pCpuGradStops);
+    SafeReleaseCOM(pRamGradBrush);
+    SafeReleaseCOM(pRamGradStops);
+    SafeReleaseCOM(pNetDownGradBrush);
+    SafeReleaseCOM(pNetDownGradStops);
+    SafeReleaseCOM(pNetUpGradBrush);
+    SafeReleaseCOM(pNetUpGradStops);
+    SafeReleaseCOM(pGpuGradBrush);
+    SafeReleaseCOM(pGpuGradStops);
+
+    lastPreset = static_cast<Theme::ThemePreset>(-1);
+    lastCpuColor = { 0, 0, 0, 0 };
+}
+
+void FlyoutWindow::FlyoutBrushPool::EnsureBrushes(
+    ID2D1DCRenderTarget* rt,
+    const Theme::Palette& pal,
+    float H,
+    bool isLightMode,
+    Theme::ThemePreset preset,
+    D2D1_COLOR_F cpuColor
+) {
+    if (!rt) return;
+
+    bool themeChanged = (!pWindowBg || lastPreset != preset || lastLightMode != isLightMode);
+
+    if (themeChanged) {
+        ReleaseAll();
+
+        lastPreset = preset;
+        lastLightMode = isLightMode;
+
+        rt->CreateSolidColorBrush(pal.WindowBg, &pWindowBg);
+        rt->CreateSolidColorBrush(pal.WindowBorder, &pWindowBorder);
+        rt->CreateSolidColorBrush(pal.CardBg, &pCardBg);
+        rt->CreateSolidColorBrush(pal.CardBorder, &pCardBorder);
+        rt->CreateSolidColorBrush(pal.PillBg, &pPillBg);
+        rt->CreateSolidColorBrush(pal.TextPrimary, &pTextPrimary);
+        rt->CreateSolidColorBrush(pal.TextSecondary, &pTextSecondary);
+        rt->CreateSolidColorBrush(pal.TextMuted, &pTextMuted);
+        rt->CreateSolidColorBrush(pal.TrackBg, &pTrackBg);
+        rt->CreateSolidColorBrush(pal.GridLine, &pGridLine);
+        rt->CreateSolidColorBrush(pal.RamPurple, &pRamPurple);
+        rt->CreateSolidColorBrush(pal.NetDownGreen, &pNetDownGreen);
+        rt->CreateSolidColorBrush(pal.NetUpBlue, &pNetUpBlue);
+        rt->CreateSolidColorBrush(pal.GpuCyan, &pGpuCyan);
+        rt->CreateSolidColorBrush(pal.DiskAmber, &pDiskAmber);
+        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &pWhiteCore);
+        rt->CreateSolidColorBrush(D2D1::ColorF(pal.NetDownGreen.r, pal.NetDownGreen.g, pal.NetDownGreen.b, 0.25f), &pGreenDotGlow);
+        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.4f), &pHaloBrush);
+
+        if (pal.isTranslucent) {
+            D2D1_GRADIENT_STOP glassStops[3];
+            glassStops[0].color = pal.WindowBorder;
+            glassStops[0].position = 0.0f;
+            glassStops[1].color = D2D1::ColorF(pal.WindowBorder.r, pal.WindowBorder.g, pal.WindowBorder.b, pal.WindowBorder.a * 0.45f);
+            glassStops[1].position = 0.40f;
+            glassStops[2].color = D2D1::ColorF(pal.WindowBorder.r, pal.WindowBorder.g, pal.WindowBorder.b, pal.WindowBorder.a * 0.20f);
+            glassStops[2].position = 1.0f;
+
+            rt->CreateGradientStopCollection(glassStops, 3, &pGlassStops);
+            if (pGlassStops) {
+                rt->CreateLinearGradientBrush(
+                    D2D1::LinearGradientBrushProperties(D2D1::Point2F(0.0f, 0.5f), D2D1::Point2F(0.0f, H - 0.5f)),
+                    pGlassStops,
+                    &pGlassRim
+                );
+            }
+        }
+
+        float topAlpha = isLightMode ? 0.35f : 0.28f;
+        CreateWaveformGrad(rt, pal.RamPurple, topAlpha, &pRamGradStops, &pRamGradBrush);
+        CreateWaveformGrad(rt, pal.NetDownGreen, topAlpha, &pNetDownGradStops, &pNetDownGradBrush);
+        CreateWaveformGrad(rt, pal.NetUpBlue, topAlpha, &pNetUpGradStops, &pNetUpGradBrush);
+        CreateWaveformGrad(rt, pal.GpuCyan, topAlpha, &pGpuGradStops, &pGpuGradBrush);
+    }
+
+    // 检查 CPU 状态颜色是否有跨阈值变化（绿/橙/红）
+    bool cpuColorChanged = (!pCpuLine ||
+        lastCpuColor.r != cpuColor.r ||
+        lastCpuColor.g != cpuColor.g ||
+        lastCpuColor.b != cpuColor.b ||
+        lastCpuColor.a != cpuColor.a);
+
+    if (cpuColorChanged) {
+        lastCpuColor = cpuColor;
+        if (pCpuLine) {
+            pCpuLine->SetColor(cpuColor);
+        } else {
+            rt->CreateSolidColorBrush(cpuColor, &pCpuLine);
+        }
+        float topAlpha = isLightMode ? 0.35f : 0.28f;
+        CreateWaveformGrad(rt, cpuColor, topAlpha, &pCpuGradStops, &pCpuGradBrush);
+    }
+}
+
+// -------------------------------------------------------------
 // Reusable High-Fidelity Waveform Plotter
 // -------------------------------------------------------------
 void FlyoutWindow::DrawWaveform(
@@ -204,6 +403,8 @@ void FlyoutWindow::DrawWaveform(
     float chartX, float chartY, float chartW, float chartH,
     const MetricHistory& history,
     float maxVal,
+    ID2D1SolidColorBrush* strokeBrush,
+    ID2D1LinearGradientBrush* areaBrush,
     D2D1_COLOR_F strokeCol,
     ID2D1Brush* gridBrush,
     ID2D1Brush* textBrush,
@@ -248,7 +449,7 @@ void FlyoutWindow::DrawWaveform(
         }
     }
 
-    // 2. Waveform Geometry & Fill
+    // 2. Waveform Geometry (Fill Area & Crisp Stroke Polyline)
     size_t count = history.Size();
     if (count < 2 || !m_renderer.GetD2DFactory()) return;
 
@@ -256,91 +457,73 @@ void FlyoutWindow::DrawWaveform(
     float startHistX = plotX + (59 - (count - 1)) * step;
 
     ID2D1PathGeometry* pAreaGeom = nullptr;
+    ID2D1PathGeometry* pStrokeGeom = nullptr;
     m_renderer.GetD2DFactory()->CreatePathGeometry(&pAreaGeom);
+    m_renderer.GetD2DFactory()->CreatePathGeometry(&pStrokeGeom);
 
     if (pAreaGeom) {
-        ID2D1GeometrySink* pSink = nullptr;
-        if (SUCCEEDED(pAreaGeom->Open(&pSink))) {
-            pSink->BeginFigure(D2D1::Point2F(startHistX, chartY + chartH), D2D1_FIGURE_BEGIN_FILLED);
+        ID2D1GeometrySink* pAreaSink = nullptr;
+        if (SUCCEEDED(pAreaGeom->Open(&pAreaSink))) {
+            pAreaSink->BeginFigure(D2D1::Point2F(startHistX, chartY + chartH), D2D1_FIGURE_BEGIN_FILLED);
 
             for (size_t i = 0; i < count; ++i) {
                 float px = startHistX + i * step;
                 float pct = std::clamp(history[i] / maxVal, 0.0f, 1.0f);
                 float py = chartY + chartH - (pct * (chartH - 6.0f)) - 3.0f;
-                pSink->AddLine(D2D1::Point2F(px, py));
+                pAreaSink->AddLine(D2D1::Point2F(px, py));
             }
 
             float endPx = startHistX + (count - 1) * step;
-            pSink->AddLine(D2D1::Point2F(endPx, chartY + chartH));
-            pSink->EndFigure(D2D1_FIGURE_END_CLOSED);
-            pSink->Close();
-            pSink->Release();
+            pAreaSink->AddLine(D2D1::Point2F(endPx, chartY + chartH));
+            pAreaSink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            pAreaSink->Close();
+            pAreaSink->Release();
 
-            // Gradient fill (top vibrant, fading to pure transparent at base)
-            ID2D1GradientStopCollection* pStops = nullptr;
-            D2D1_GRADIENT_STOP stops[2];
-            stops[0].color = D2D1::ColorF(strokeCol.r, strokeCol.g, strokeCol.b, m_isLightMode ? 0.35f : 0.28f);
-            stops[0].position = 0.0f;
-            stops[1].color = D2D1::ColorF(strokeCol.r, strokeCol.g, strokeCol.b, 0.0f);
-            stops[1].position = 1.0f;
-
-            rt->CreateGradientStopCollection(stops, 2, &pStops);
-            if (pStops) {
-                ID2D1LinearGradientBrush* pAreaBrush = nullptr;
-                rt->CreateLinearGradientBrush(
-                    D2D1::LinearGradientBrushProperties(
-                        D2D1::Point2F(plotX, chartY),
-                        D2D1::Point2F(plotX, chartY + chartH)
-                    ),
-                    pStops,
-                    &pAreaBrush
-                );
-                if (pAreaBrush) {
-                    rt->FillGeometry(pAreaGeom, pAreaBrush);
-                    pAreaBrush->Release();
-                }
-                pStops->Release();
+            // 复用池化线性渐变画刷填充波形曲面，无需每帧分配
+            if (areaBrush) {
+                areaBrush->SetStartPoint(D2D1::Point2F(plotX, chartY));
+                areaBrush->SetEndPoint(D2D1::Point2F(plotX, chartY + chartH));
+                rt->FillGeometry(pAreaGeom, areaBrush);
             }
         }
         pAreaGeom->Release();
     }
 
-    // 3. Crisp stroke line with round joins
-    ID2D1SolidColorBrush* pStrokeBrush = nullptr;
-    rt->CreateSolidColorBrush(strokeCol, &pStrokeBrush);
-    if (pStrokeBrush) {
-        for (size_t i = 1; i < count; ++i) {
-            float x1 = startHistX + (i - 1) * step;
-            float pct1 = std::clamp(history[i - 1] / maxVal, 0.0f, 1.0f);
-            float y1 = chartY + chartH - (pct1 * (chartH - 6.0f)) - 3.0f;
+    // 3. Crisp stroke line: 单次提交连续折线，避免循环调用数百次 DrawLine
+    if (pStrokeGeom && strokeBrush) {
+        ID2D1GeometrySink* pStrokeSink = nullptr;
+        if (SUCCEEDED(pStrokeGeom->Open(&pStrokeSink))) {
+            float firstPct = std::clamp(history[0] / maxVal, 0.0f, 1.0f);
+            float firstPy = chartY + chartH - (firstPct * (chartH - 6.0f)) - 3.0f;
+            pStrokeSink->BeginFigure(D2D1::Point2F(startHistX, firstPy), D2D1_FIGURE_BEGIN_HOLLOW);
 
-            float x2 = startHistX + i * step;
-            float pct2 = std::clamp(history[i] / maxVal, 0.0f, 1.0f);
-            float y2 = chartY + chartH - (pct2 * (chartH - 6.0f)) - 3.0f;
+            for (size_t i = 1; i < count; ++i) {
+                float px = startHistX + i * step;
+                float pct = std::clamp(history[i] / maxVal, 0.0f, 1.0f);
+                float py = chartY + chartH - (pct * (chartH - 6.0f)) - 3.0f;
+                pStrokeSink->AddLine(D2D1::Point2F(px, py));
+            }
 
-            rt->DrawLine(D2D1::Point2F(x1, y1), D2D1::Point2F(x2, y2), pStrokeBrush, 1.6f);
+            pStrokeSink->EndFigure(D2D1_FIGURE_END_OPEN);
+            pStrokeSink->Close();
+            pStrokeSink->Release();
+
+            rt->DrawGeometry(pStrokeGeom, strokeBrush, 1.6f, m_renderer.GetRoundStrokeStyle());
         }
+        pStrokeGeom->Release();
+    }
 
-        // 4. Live Current Beacon Point with white core & glowing halo
-        float lastPct = std::clamp(history.Back() / maxVal, 0.0f, 1.0f);
-        float lastX = startHistX + (count - 1) * step;
-        float lastY = chartY + chartH - (lastPct * (chartH - 6.0f)) - 3.0f;
+    // 4. Live Current Beacon Point with white core & glowing halo
+    float lastPct = std::clamp(history.Back() / maxVal, 0.0f, 1.0f);
+    float lastX = startHistX + (count - 1) * step;
+    float lastY = chartY + chartH - (lastPct * (chartH - 6.0f)) - 3.0f;
 
-        ID2D1SolidColorBrush* pHaloBrush = nullptr;
-        ID2D1SolidColorBrush* pCoreBrush = nullptr;
-        rt->CreateSolidColorBrush(D2D1::ColorF(strokeCol.r, strokeCol.g, strokeCol.b, 0.40f), &pHaloBrush);
-        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &pCoreBrush);
-
-        if (pHaloBrush) {
-            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(lastX, lastY), 4.0f, 4.0f), pHaloBrush);
-            pHaloBrush->Release();
-        }
-        if (pCoreBrush) {
-            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(lastX, lastY), 1.8f, 1.8f), pCoreBrush);
-            pCoreBrush->Release();
-        }
-
-        pStrokeBrush->Release();
+    if (m_brushes.pHaloBrush) {
+        m_brushes.pHaloBrush->SetColor(D2D1::ColorF(strokeCol.r, strokeCol.g, strokeCol.b, 0.40f));
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(lastX, lastY), 4.0f, 4.0f), m_brushes.pHaloBrush);
+    }
+    if (m_brushes.pWhiteCore) {
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(lastX, lastY), 1.8f, 1.8f), m_brushes.pWhiteCore);
     }
 }
 
@@ -359,49 +542,27 @@ void FlyoutWindow::Render() {
     float curY = 12.0f;
 
     auto pal = Theme::GetPresetPalette(m_preset);
+    D2D1_COLOR_F cpuStatusCol = Theme::GetCpuStatusColor(m_snapshot.cpuUsageTotal);
+
+    // 0. Ensure pooled brushes are ready for current theme & DPI
+    m_brushes.EnsureBrushes(rt, pal, H, m_isLightMode, m_preset, cpuStatusCol);
 
     // 1. Frosted Translucent Card with rounded corners
-    ID2D1SolidColorBrush* pWindowBg = nullptr;
-    ID2D1SolidColorBrush* pWindowBorder = nullptr;
-    rt->CreateSolidColorBrush(pal.WindowBg, &pWindowBg);
-    rt->CreateSolidColorBrush(pal.WindowBorder, &pWindowBorder);
-
     D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
         D2D1::RectF(0.5f, 0.5f, W - 0.5f, H - 0.5f), 16.0f, 16.0f
     );
-    if (pWindowBg) rt->FillRoundedRectangle(rrc, pWindowBg);
+    if (m_brushes.pWindowBg) rt->FillRoundedRectangle(rrc, m_brushes.pWindowBg);
 
     // Specular Rim Gradient Highlight for Translucent styles
     if (pal.isTranslucent) {
-        ID2D1GradientStopCollection* pGlassStops = nullptr;
-        D2D1_GRADIENT_STOP glassStops[3];
-        glassStops[0].color = pal.WindowBorder;
-        glassStops[0].position = 0.0f;
-        glassStops[1].color = D2D1::ColorF(pal.WindowBorder.r, pal.WindowBorder.g, pal.WindowBorder.b, pal.WindowBorder.a * 0.45f);
-        glassStops[1].position = 0.40f;
-        glassStops[2].color = D2D1::ColorF(pal.WindowBorder.r, pal.WindowBorder.g, pal.WindowBorder.b, pal.WindowBorder.a * 0.20f);
-        glassStops[2].position = 1.0f;
-
-        rt->CreateGradientStopCollection(glassStops, 3, &pGlassStops);
-        if (pGlassStops) {
-            ID2D1LinearGradientBrush* pGlassBorder = nullptr;
-            rt->CreateLinearGradientBrush(
-                D2D1::LinearGradientBrushProperties(D2D1::Point2F(0.0f, 0.5f), D2D1::Point2F(0.0f, H - 0.5f)),
-                pGlassStops,
-                &pGlassBorder
-            );
-            if (pGlassBorder) {
-                rt->DrawRoundedRectangle(rrc, pGlassBorder, 1.4f);
-                pGlassBorder->Release();
-            }
-            pGlassStops->Release();
+        if (m_brushes.pGlassRim) {
+            rt->DrawRoundedRectangle(rrc, m_brushes.pGlassRim, 1.4f);
         }
     } else {
-        if (pWindowBorder) rt->DrawRoundedRectangle(rrc, pWindowBorder, 1.2f);
+        if (m_brushes.pWindowBorder) {
+            rt->DrawRoundedRectangle(rrc, m_brushes.pWindowBorder, 1.2f);
+        }
     }
-
-    if (pWindowBg) pWindowBg->Release();
-    if (pWindowBorder) pWindowBorder->Release();
 
     // Render All Dashboard Modules:
     // Header -> CPU Waveform -> Memory Waveform -> Net Dual Waveform -> GPU Waveform -> Disks
@@ -413,6 +574,12 @@ void FlyoutWindow::Render() {
     DrawDiskSection(rt, curY, contentW, pal);
 
     m_renderer.EndDraw();
+
+    // 周期性主动整理工作集，保持展开状态下的内存处于极致轻量范围 (8~10 MB)
+    m_renderCount++;
+    if (m_renderCount % 3 == 0) {
+        SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+    }
 }
 
 // 绘制详情窗口标题、在线状态指示灯和关闭按钮。
@@ -420,38 +587,25 @@ void FlyoutWindow::DrawHeader(ID2D1DCRenderTarget* rt, float& curY, float width,
     float startX = 12.0f;
 
     // Glowing green live status dot
-    ID2D1SolidColorBrush* pDotBrush = nullptr;
-    ID2D1SolidColorBrush* pDotGlow = nullptr;
-    rt->CreateSolidColorBrush(pal.NetDownGreen, &pDotBrush);
-    rt->CreateSolidColorBrush(D2D1::ColorF(pal.NetDownGreen.r, pal.NetDownGreen.g, pal.NetDownGreen.b, 0.25f), &pDotGlow);
-
-    if (pDotGlow) {
-        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(startX + 8.0f, curY + 9.5f), 5.0f, 5.0f), pDotGlow);
-        pDotGlow->Release();
+    if (m_brushes.pGreenDotGlow) {
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(startX + 8.0f, curY + 9.5f), 5.0f, 5.0f), m_brushes.pGreenDotGlow);
     }
-    if (pDotBrush) {
-        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(startX + 8.0f, curY + 9.5f), 2.8f, 2.8f), pDotBrush);
-        pDotBrush->Release();
+    if (m_brushes.pNetDownGreen) {
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(startX + 8.0f, curY + 9.5f), 2.8f, 2.8f), m_brushes.pNetDownGreen);
     }
 
     // Title
-    ID2D1SolidColorBrush* pTextBrush = nullptr;
-    rt->CreateSolidColorBrush(pal.TextPrimary, &pTextBrush);
-    if (pTextBrush && m_renderer.GetFormatTitle()) {
+    if (m_brushes.pTextPrimary && m_renderer.GetFormatTitle()) {
         std::wstring title = L"系统运行概览";
         rt->DrawTextW(title.c_str(), (UINT32)title.length(), m_renderer.GetFormatTitle(),
-            D2D1::RectF(startX + 18.0f, curY, startX + width - 26.0f, curY + 22.0f), pTextBrush);
+            D2D1::RectF(startX + 18.0f, curY, startX + width - 26.0f, curY + 22.0f), m_brushes.pTextPrimary);
     }
 
     // Close button "✕"
-    ID2D1SolidColorBrush* pMutedBrush = nullptr;
-    rt->CreateSolidColorBrush(pal.TextMuted, &pMutedBrush);
-    if (pMutedBrush && m_renderer.GetFormatValue()) {
+    if (m_brushes.pTextMuted && m_renderer.GetFormatValue()) {
         rt->DrawTextW(L"✕", 1, m_renderer.GetFormatValue(),
-            D2D1::RectF(startX + width - 16.0f, curY, startX + width, curY + 22.0f), pMutedBrush);
-        pMutedBrush->Release();
+            D2D1::RectF(startX + width - 16.0f, curY, startX + width, curY + 22.0f), m_brushes.pTextMuted);
     }
-    if (pTextBrush) pTextBrush->Release();
 
     curY += 26.0f;
 }
@@ -463,47 +617,29 @@ void FlyoutWindow::DrawCpuSection(ID2D1DCRenderTarget* rt, float& curY, float wi
     float startX = 12.0f;
     float cardH = 82.0f;
 
-    D2D1_COLOR_F cpuStatusCol = Theme::GetCpuStatusColor(m_snapshot.cpuUsageTotal);
-
-    ID2D1SolidColorBrush* pCardBg = nullptr;
-    ID2D1SolidColorBrush* pCardBorder = nullptr;
-    ID2D1SolidColorBrush* pTextPrimary = nullptr;
-    ID2D1SolidColorBrush* pTextSecondary = nullptr;
-    ID2D1SolidColorBrush* pCpuLine = nullptr;
-    ID2D1SolidColorBrush* pTrackBg = nullptr;
-    ID2D1SolidColorBrush* pGridLine = nullptr;
-    ID2D1SolidColorBrush* pTextMuted = nullptr;
-
-    rt->CreateSolidColorBrush(pal.CardBg, &pCardBg);
-    rt->CreateSolidColorBrush(pal.CardBorder, &pCardBorder);
-    rt->CreateSolidColorBrush(pal.TextPrimary, &pTextPrimary);
-    rt->CreateSolidColorBrush(pal.TextSecondary, &pTextSecondary);
-    rt->CreateSolidColorBrush(cpuStatusCol, &pCpuLine);
-    rt->CreateSolidColorBrush(pal.TrackBg, &pTrackBg);
-    rt->CreateSolidColorBrush(pal.GridLine, &pGridLine);
-    rt->CreateSolidColorBrush(pal.TextMuted, &pTextMuted);
+    D2D1_COLOR_F cpuStatusCol = m_brushes.lastCpuColor;
 
     D2D1_ROUNDED_RECT cardRc = D2D1::RoundedRect(D2D1::RectF(startX, curY, startX + width, curY + cardH), 9.0f, 9.0f);
-    if (pCardBg) rt->FillRoundedRectangle(cardRc, pCardBg);
-    if (pCardBorder) rt->DrawRoundedRectangle(cardRc, pCardBorder, 1.0f);
+    if (m_brushes.pCardBg) rt->FillRoundedRectangle(cardRc, m_brushes.pCardBg);
+    if (m_brushes.pCardBorder) rt->DrawRoundedRectangle(cardRc, m_brushes.pCardBorder, 1.0f);
 
     // Vector CPU Icon
-    DrawCpuIcon(rt, startX + 10.0f, curY + 5.5f, pTextSecondary);
+    DrawCpuIcon(rt, startX + 10.0f, curY + 5.5f, m_brushes.pTextSecondary);
 
     // Label "CPU 总体负载"
-    if (pTextSecondary && m_renderer.GetFormatLabel()) {
+    if (m_brushes.pTextSecondary && m_renderer.GetFormatLabel()) {
         const wchar_t* cpuLabel = L"CPU 总体负载";
         rt->DrawTextW(cpuLabel, static_cast<UINT32>(wcslen(cpuLabel)), m_renderer.GetFormatLabel(),
-            D2D1::RectF(startX + 28.0f, curY + 4.5f, startX + width - 75.0f, curY + 22.0f), pTextSecondary);
+            D2D1::RectF(startX + 28.0f, curY + 4.5f, startX + width - 75.0f, curY + 22.0f), m_brushes.pTextSecondary);
     }
 
     // Value right-aligned
     wchar_t valText[32];
     swprintf_s(valText, L"%.1f%%", m_snapshot.cpuUsageTotal);
-    if (pCpuLine && m_renderer.GetFormatValue()) {
+    if (m_brushes.pCpuLine && m_renderer.GetFormatValue()) {
         m_renderer.GetFormatValue()->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
         rt->DrawTextW(valText, (UINT32)wcslen(valText), m_renderer.GetFormatValue(),
-            D2D1::RectF(startX + width - 85.0f, curY + 3.5f, startX + width - 10.0f, curY + 22.0f), pCpuLine);
+            D2D1::RectF(startX + width - 85.0f, curY + 3.5f, startX + width - 10.0f, curY + 22.0f), m_brushes.pCpuLine);
         m_renderer.GetFormatValue()->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
     }
 
@@ -514,19 +650,16 @@ void FlyoutWindow::DrawCpuSection(ID2D1DCRenderTarget* rt, float& curY, float wi
     float chartH = 50.0f;
 
     D2D1_ROUNDED_RECT chartRc = D2D1::RoundedRect(D2D1::RectF(chartX, chartY, chartX + chartW, chartY + chartH), 4.0f, 4.0f);
-    if (pTrackBg) rt->FillRoundedRectangle(chartRc, pTrackBg);
-    if (pCardBorder) rt->DrawRoundedRectangle(chartRc, pCardBorder, 0.8f);
+    if (m_brushes.pTrackBg) rt->FillRoundedRectangle(chartRc, m_brushes.pTrackBg);
+    if (m_brushes.pCardBorder) rt->DrawRoundedRectangle(chartRc, m_brushes.pCardBorder, 0.8f);
 
-    DrawWaveform(rt, chartX, chartY, chartW, chartH, m_snapshot.cpuHistory, 100.0f, cpuStatusCol, pGridLine, pTextMuted, L"100%", L"50%");
-
-    if (pCardBg) pCardBg->Release();
-    if (pCardBorder) pCardBorder->Release();
-    if (pTextPrimary) pTextPrimary->Release();
-    if (pTextSecondary) pTextSecondary->Release();
-    if (pCpuLine) pCpuLine->Release();
-    if (pTrackBg) pTrackBg->Release();
-    if (pGridLine) pGridLine->Release();
-    if (pTextMuted) pTextMuted->Release();
+    DrawWaveform(
+        rt, chartX, chartY, chartW, chartH,
+        m_snapshot.cpuHistory, 100.0f,
+        m_brushes.pCpuLine, m_brushes.pCpuGradBrush,
+        cpuStatusCol, m_brushes.pGridLine, m_brushes.pTextMuted,
+        L"100%", L"50%"
+    );
 
     curY += cardH + 7.0f;
 }
@@ -538,47 +671,29 @@ void FlyoutWindow::DrawMemorySection(ID2D1DCRenderTarget* rt, float& curY, float
     float startX = 12.0f;
     float cardH = 82.0f;
 
-    ID2D1SolidColorBrush* pCardBg = nullptr;
-    ID2D1SolidColorBrush* pCardBorder = nullptr;
-    ID2D1SolidColorBrush* pTextPrimary = nullptr;
-    ID2D1SolidColorBrush* pTextSecondary = nullptr;
-    ID2D1SolidColorBrush* pRamBrush = nullptr;
-    ID2D1SolidColorBrush* pTrackBg = nullptr;
-    ID2D1SolidColorBrush* pGridLine = nullptr;
-    ID2D1SolidColorBrush* pTextMuted = nullptr;
-
-    rt->CreateSolidColorBrush(pal.CardBg, &pCardBg);
-    rt->CreateSolidColorBrush(pal.CardBorder, &pCardBorder);
-    rt->CreateSolidColorBrush(pal.TextPrimary, &pTextPrimary);
-    rt->CreateSolidColorBrush(pal.TextSecondary, &pTextSecondary);
-    rt->CreateSolidColorBrush(pal.RamPurple, &pRamBrush);
-    rt->CreateSolidColorBrush(pal.TrackBg, &pTrackBg);
-    rt->CreateSolidColorBrush(pal.GridLine, &pGridLine);
-    rt->CreateSolidColorBrush(pal.TextMuted, &pTextMuted);
-
     D2D1_ROUNDED_RECT cardRc = D2D1::RoundedRect(D2D1::RectF(startX, curY, startX + width, curY + cardH), 9.0f, 9.0f);
-    if (pCardBg) rt->FillRoundedRectangle(cardRc, pCardBg);
-    if (pCardBorder) rt->DrawRoundedRectangle(cardRc, pCardBorder, 1.0f);
+    if (m_brushes.pCardBg) rt->FillRoundedRectangle(cardRc, m_brushes.pCardBg);
+    if (m_brushes.pCardBorder) rt->DrawRoundedRectangle(cardRc, m_brushes.pCardBorder, 1.0f);
 
     // Vector RAM Icon
-    DrawRamIcon(rt, startX + 10.0f, curY + 5.5f, pTextSecondary);
+    DrawRamIcon(rt, startX + 10.0f, curY + 5.5f, m_brushes.pTextSecondary);
 
     double usedGB = static_cast<double>(m_snapshot.usedPhysMem) / (1024.0 * 1024.0 * 1024.0);
     double totalGB = static_cast<double>(m_snapshot.totalPhysMem) / (1024.0 * 1024.0 * 1024.0);
 
     wchar_t ramSub[64];
     swprintf_s(ramSub, L"物理内存 (%.1f / %.1f GB)", usedGB, totalGB);
-    if (pTextSecondary && m_renderer.GetFormatLabel()) {
+    if (m_brushes.pTextSecondary && m_renderer.GetFormatLabel()) {
         rt->DrawTextW(ramSub, (UINT32)wcslen(ramSub), m_renderer.GetFormatLabel(),
-            D2D1::RectF(startX + 28.0f, curY + 4.5f, startX + width - 65.0f, curY + 22.0f), pTextSecondary);
+            D2D1::RectF(startX + 28.0f, curY + 4.5f, startX + width - 65.0f, curY + 22.0f), m_brushes.pTextSecondary);
     }
 
     wchar_t pctText[16];
     swprintf_s(pctText, L"%.0f%%", m_snapshot.memoryUsagePercent);
-    if (pRamBrush && m_renderer.GetFormatValue()) {
+    if (m_brushes.pRamPurple && m_renderer.GetFormatValue()) {
         m_renderer.GetFormatValue()->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
         rt->DrawTextW(pctText, (UINT32)wcslen(pctText), m_renderer.GetFormatValue(),
-            D2D1::RectF(startX + width - 75.0f, curY + 3.5f, startX + width - 10.0f, curY + 22.0f), pRamBrush);
+            D2D1::RectF(startX + width - 75.0f, curY + 3.5f, startX + width - 10.0f, curY + 22.0f), m_brushes.pRamPurple);
         m_renderer.GetFormatValue()->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
     }
 
@@ -589,19 +704,16 @@ void FlyoutWindow::DrawMemorySection(ID2D1DCRenderTarget* rt, float& curY, float
     float chartH = 50.0f;
 
     D2D1_ROUNDED_RECT chartRc = D2D1::RoundedRect(D2D1::RectF(chartX, chartY, chartX + chartW, chartY + chartH), 4.0f, 4.0f);
-    if (pTrackBg) rt->FillRoundedRectangle(chartRc, pTrackBg);
-    if (pCardBorder) rt->DrawRoundedRectangle(chartRc, pCardBorder, 0.8f);
+    if (m_brushes.pTrackBg) rt->FillRoundedRectangle(chartRc, m_brushes.pTrackBg);
+    if (m_brushes.pCardBorder) rt->DrawRoundedRectangle(chartRc, m_brushes.pCardBorder, 0.8f);
 
-    DrawWaveform(rt, chartX, chartY, chartW, chartH, m_snapshot.memoryHistory, 100.0f, pal.RamPurple, pGridLine, pTextMuted, L"100%", L"50%");
-
-    if (pCardBg) pCardBg->Release();
-    if (pCardBorder) pCardBorder->Release();
-    if (pTextPrimary) pTextPrimary->Release();
-    if (pTextSecondary) pTextSecondary->Release();
-    if (pRamBrush) pRamBrush->Release();
-    if (pTrackBg) pTrackBg->Release();
-    if (pGridLine) pGridLine->Release();
-    if (pTextMuted) pTextMuted->Release();
+    DrawWaveform(
+        rt, chartX, chartY, chartW, chartH,
+        m_snapshot.memoryHistory, 100.0f,
+        m_brushes.pRamPurple, m_brushes.pRamGradBrush,
+        pal.RamPurple, m_brushes.pGridLine, m_brushes.pTextMuted,
+        L"100%", L"50%"
+    );
 
     curY += cardH + 7.0f;
 }
@@ -614,24 +726,6 @@ void FlyoutWindow::DrawNetworkSection(ID2D1DCRenderTarget* rt, float& curY, floa
     float cardH = 82.0f;
     float gap = 8.0f;
     float halfW = (width - gap) / 2.0f;
-
-    ID2D1SolidColorBrush* pCardBg = nullptr;
-    ID2D1SolidColorBrush* pCardBorder = nullptr;
-    ID2D1SolidColorBrush* pTextSecondary = nullptr;
-    ID2D1SolidColorBrush* pDownBrush = nullptr;
-    ID2D1SolidColorBrush* pUpBrush = nullptr;
-    ID2D1SolidColorBrush* pTrackBg = nullptr;
-    ID2D1SolidColorBrush* pGridLine = nullptr;
-    ID2D1SolidColorBrush* pTextMuted = nullptr;
-
-    rt->CreateSolidColorBrush(pal.CardBg, &pCardBg);
-    rt->CreateSolidColorBrush(pal.CardBorder, &pCardBorder);
-    rt->CreateSolidColorBrush(pal.TextSecondary, &pTextSecondary);
-    rt->CreateSolidColorBrush(pal.NetDownGreen, &pDownBrush);
-    rt->CreateSolidColorBrush(pal.NetUpBlue, &pUpBrush);
-    rt->CreateSolidColorBrush(pal.TrackBg, &pTrackBg);
-    rt->CreateSolidColorBrush(pal.GridLine, &pGridLine);
-    rt->CreateSolidColorBrush(pal.TextMuted, &pTextMuted);
 
     // Calculate dynamic auto-scaling upper bound for Download & Upload
     float maxDown = 1024.0f * 1024.0f; // Minimum scale: 1 MB/s
@@ -658,23 +752,23 @@ void FlyoutWindow::DrawNetworkSection(ID2D1DCRenderTarget* rt, float& curY, floa
     // Left Card: Download
     {
         D2D1_ROUNDED_RECT cardRc = D2D1::RoundedRect(D2D1::RectF(startX, curY, startX + halfW, curY + cardH), 9.0f, 9.0f);
-        if (pCardBg) rt->FillRoundedRectangle(cardRc, pCardBg);
-        if (pCardBorder) rt->DrawRoundedRectangle(cardRc, pCardBorder, 1.0f);
+        if (m_brushes.pCardBg) rt->FillRoundedRectangle(cardRc, m_brushes.pCardBg);
+        if (m_brushes.pCardBorder) rt->DrawRoundedRectangle(cardRc, m_brushes.pCardBorder, 1.0f);
 
-        if (pDownBrush && m_renderer.GetFormatLabel()) {
+        if (m_brushes.pNetDownGreen && m_renderer.GetFormatLabel()) {
             rt->DrawTextW(L"↓", 1, m_renderer.GetFormatLabel(),
-                D2D1::RectF(startX + 8.0f, curY + 4.5f, startX + 20.0f, curY + 22.0f), pDownBrush);
+                D2D1::RectF(startX + 8.0f, curY + 4.5f, startX + 20.0f, curY + 22.0f), m_brushes.pNetDownGreen);
         }
-        if (pTextSecondary && m_renderer.GetFormatLabel()) {
+        if (m_brushes.pTextSecondary && m_renderer.GetFormatLabel()) {
             rt->DrawTextW(L"下载流速", 4, m_renderer.GetFormatLabel(),
-                D2D1::RectF(startX + 20.0f, curY + 4.5f, startX + halfW - 65.0f, curY + 22.0f), pTextSecondary);
+                D2D1::RectF(startX + 20.0f, curY + 4.5f, startX + halfW - 65.0f, curY + 22.0f), m_brushes.pTextSecondary);
         }
 
         std::wstring downText = FormatSpeed(m_snapshot.downloadSpeedBps);
-        if (pDownBrush && m_renderer.GetFormatSmall()) {
+        if (m_brushes.pNetDownGreen && m_renderer.GetFormatSmall()) {
             m_renderer.GetFormatSmall()->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
             rt->DrawTextW(downText.c_str(), (UINT32)downText.length(), m_renderer.GetFormatSmall(),
-                D2D1::RectF(startX + halfW - 85.0f, curY + 4.5f, startX + halfW - 8.0f, curY + 22.0f), pDownBrush);
+                D2D1::RectF(startX + halfW - 85.0f, curY + 4.5f, startX + halfW - 8.0f, curY + 22.0f), m_brushes.pNetDownGreen);
             m_renderer.GetFormatSmall()->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         }
 
@@ -684,33 +778,39 @@ void FlyoutWindow::DrawNetworkSection(ID2D1DCRenderTarget* rt, float& curY, floa
         float chartH = 50.0f;
 
         D2D1_ROUNDED_RECT chartRc = D2D1::RoundedRect(D2D1::RectF(chartX, chartY, chartX + chartW, chartY + chartH), 4.0f, 4.0f);
-        if (pTrackBg) rt->FillRoundedRectangle(chartRc, pTrackBg);
-        if (pCardBorder) rt->DrawRoundedRectangle(chartRc, pCardBorder, 0.8f);
+        if (m_brushes.pTrackBg) rt->FillRoundedRectangle(chartRc, m_brushes.pTrackBg);
+        if (m_brushes.pCardBorder) rt->DrawRoundedRectangle(chartRc, m_brushes.pCardBorder, 0.8f);
 
-        DrawWaveform(rt, chartX, chartY, chartW, chartH, m_snapshot.downloadHistory, maxDown, pal.NetDownGreen, pGridLine, pTextMuted, downTopScale, downMidScale);
+        DrawWaveform(
+            rt, chartX, chartY, chartW, chartH,
+            m_snapshot.downloadHistory, maxDown,
+            m_brushes.pNetDownGreen, m_brushes.pNetDownGradBrush,
+            pal.NetDownGreen, m_brushes.pGridLine, m_brushes.pTextMuted,
+            downTopScale, downMidScale
+        );
     }
 
     // Right Card: Upload
     {
         float rightX = startX + halfW + gap;
         D2D1_ROUNDED_RECT cardRc = D2D1::RoundedRect(D2D1::RectF(rightX, curY, rightX + halfW, curY + cardH), 9.0f, 9.0f);
-        if (pCardBg) rt->FillRoundedRectangle(cardRc, pCardBg);
-        if (pCardBorder) rt->DrawRoundedRectangle(cardRc, pCardBorder, 1.0f);
+        if (m_brushes.pCardBg) rt->FillRoundedRectangle(cardRc, m_brushes.pCardBg);
+        if (m_brushes.pCardBorder) rt->DrawRoundedRectangle(cardRc, m_brushes.pCardBorder, 1.0f);
 
-        if (pUpBrush && m_renderer.GetFormatLabel()) {
+        if (m_brushes.pNetUpBlue && m_renderer.GetFormatLabel()) {
             rt->DrawTextW(L"↑", 1, m_renderer.GetFormatLabel(),
-                D2D1::RectF(rightX + 8.0f, curY + 4.5f, rightX + 20.0f, curY + 22.0f), pUpBrush);
+                D2D1::RectF(rightX + 8.0f, curY + 4.5f, rightX + 20.0f, curY + 22.0f), m_brushes.pNetUpBlue);
         }
-        if (pTextSecondary && m_renderer.GetFormatLabel()) {
+        if (m_brushes.pTextSecondary && m_renderer.GetFormatLabel()) {
             rt->DrawTextW(L"上传流速", 4, m_renderer.GetFormatLabel(),
-                D2D1::RectF(rightX + 20.0f, curY + 4.5f, rightX + halfW - 65.0f, curY + 22.0f), pTextSecondary);
+                D2D1::RectF(rightX + 20.0f, curY + 4.5f, rightX + halfW - 65.0f, curY + 22.0f), m_brushes.pTextSecondary);
         }
 
         std::wstring upText = FormatSpeed(m_snapshot.uploadSpeedBps);
-        if (pUpBrush && m_renderer.GetFormatSmall()) {
+        if (m_brushes.pNetUpBlue && m_renderer.GetFormatSmall()) {
             m_renderer.GetFormatSmall()->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
             rt->DrawTextW(upText.c_str(), (UINT32)upText.length(), m_renderer.GetFormatSmall(),
-                D2D1::RectF(rightX + halfW - 85.0f, curY + 4.5f, rightX + halfW - 8.0f, curY + 22.0f), pUpBrush);
+                D2D1::RectF(rightX + halfW - 85.0f, curY + 4.5f, rightX + halfW - 8.0f, curY + 22.0f), m_brushes.pNetUpBlue);
             m_renderer.GetFormatSmall()->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         }
 
@@ -720,20 +820,17 @@ void FlyoutWindow::DrawNetworkSection(ID2D1DCRenderTarget* rt, float& curY, floa
         float chartH = 50.0f;
 
         D2D1_ROUNDED_RECT chartRc = D2D1::RoundedRect(D2D1::RectF(chartX, chartY, chartX + chartW, chartY + chartH), 4.0f, 4.0f);
-        if (pTrackBg) rt->FillRoundedRectangle(chartRc, pTrackBg);
-        if (pCardBorder) rt->DrawRoundedRectangle(chartRc, pCardBorder, 0.8f);
+        if (m_brushes.pTrackBg) rt->FillRoundedRectangle(chartRc, m_brushes.pTrackBg);
+        if (m_brushes.pCardBorder) rt->DrawRoundedRectangle(chartRc, m_brushes.pCardBorder, 0.8f);
 
-        DrawWaveform(rt, chartX, chartY, chartW, chartH, m_snapshot.uploadHistory, maxUp, pal.NetUpBlue, pGridLine, pTextMuted, upTopScale, upMidScale);
+        DrawWaveform(
+            rt, chartX, chartY, chartW, chartH,
+            m_snapshot.uploadHistory, maxUp,
+            m_brushes.pNetUpBlue, m_brushes.pNetUpGradBrush,
+            pal.NetUpBlue, m_brushes.pGridLine, m_brushes.pTextMuted,
+            upTopScale, upMidScale
+        );
     }
-
-    if (pCardBg) pCardBg->Release();
-    if (pCardBorder) pCardBorder->Release();
-    if (pTextSecondary) pTextSecondary->Release();
-    if (pDownBrush) pDownBrush->Release();
-    if (pUpBrush) pUpBrush->Release();
-    if (pTrackBg) pTrackBg->Release();
-    if (pGridLine) pGridLine->Release();
-    if (pTextMuted) pTextMuted->Release();
 
     curY += cardH + 7.0f;
 }
@@ -745,45 +842,27 @@ void FlyoutWindow::DrawGpuSection(ID2D1DCRenderTarget* rt, float& curY, float wi
     float startX = 12.0f;
     float cardH = 82.0f;
 
-    ID2D1SolidColorBrush* pCardBg = nullptr;
-    ID2D1SolidColorBrush* pCardBorder = nullptr;
-    ID2D1SolidColorBrush* pTextPrimary = nullptr;
-    ID2D1SolidColorBrush* pTextSecondary = nullptr;
-    ID2D1SolidColorBrush* pGpuBrush = nullptr;
-    ID2D1SolidColorBrush* pTrackBg = nullptr;
-    ID2D1SolidColorBrush* pGridLine = nullptr;
-    ID2D1SolidColorBrush* pTextMuted = nullptr;
-
-    rt->CreateSolidColorBrush(pal.CardBg, &pCardBg);
-    rt->CreateSolidColorBrush(pal.CardBorder, &pCardBorder);
-    rt->CreateSolidColorBrush(pal.TextPrimary, &pTextPrimary);
-    rt->CreateSolidColorBrush(pal.TextSecondary, &pTextSecondary);
-    rt->CreateSolidColorBrush(pal.GpuCyan, &pGpuBrush);
-    rt->CreateSolidColorBrush(pal.TrackBg, &pTrackBg);
-    rt->CreateSolidColorBrush(pal.GridLine, &pGridLine);
-    rt->CreateSolidColorBrush(pal.TextMuted, &pTextMuted);
-
     D2D1_ROUNDED_RECT cardRc = D2D1::RoundedRect(D2D1::RectF(startX, curY, startX + width, curY + cardH), 9.0f, 9.0f);
-    if (pCardBg) rt->FillRoundedRectangle(cardRc, pCardBg);
-    if (pCardBorder) rt->DrawRoundedRectangle(cardRc, pCardBorder, 1.0f);
+    if (m_brushes.pCardBg) rt->FillRoundedRectangle(cardRc, m_brushes.pCardBg);
+    if (m_brushes.pCardBorder) rt->DrawRoundedRectangle(cardRc, m_brushes.pCardBorder, 1.0f);
 
     // Vector GPU Icon
-    DrawGpuIcon(rt, startX + 10.0f, curY + 5.5f, pTextSecondary);
+    DrawGpuIcon(rt, startX + 10.0f, curY + 5.5f, m_brushes.pTextSecondary);
 
     // Label "GPU 使用率"
-    if (pTextSecondary && m_renderer.GetFormatLabel()) {
+    if (m_brushes.pTextSecondary && m_renderer.GetFormatLabel()) {
         const wchar_t* gpuLabel = L"GPU 使用率";
         rt->DrawTextW(gpuLabel, static_cast<UINT32>(wcslen(gpuLabel)), m_renderer.GetFormatLabel(),
-            D2D1::RectF(startX + 26.0f, curY + 4.5f, startX + width - 65.0f, curY + 22.0f), pTextSecondary);
+            D2D1::RectF(startX + 26.0f, curY + 4.5f, startX + width - 65.0f, curY + 22.0f), m_brushes.pTextSecondary);
     }
 
     // Value right-aligned
     wchar_t valText[32];
     swprintf_s(valText, L"%.0f%%", m_snapshot.gpuUsagePercent);
-    if (pGpuBrush && m_renderer.GetFormatValue()) {
+    if (m_brushes.pGpuCyan && m_renderer.GetFormatValue()) {
         m_renderer.GetFormatValue()->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
         rt->DrawTextW(valText, (UINT32)wcslen(valText), m_renderer.GetFormatValue(),
-            D2D1::RectF(startX + width - 75.0f, curY + 3.5f, startX + width - 10.0f, curY + 22.0f), pGpuBrush);
+            D2D1::RectF(startX + width - 75.0f, curY + 3.5f, startX + width - 10.0f, curY + 22.0f), m_brushes.pGpuCyan);
         m_renderer.GetFormatValue()->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
     }
 
@@ -794,19 +873,16 @@ void FlyoutWindow::DrawGpuSection(ID2D1DCRenderTarget* rt, float& curY, float wi
     float chartH = 50.0f;
 
     D2D1_ROUNDED_RECT chartRc = D2D1::RoundedRect(D2D1::RectF(chartX, chartY, chartX + chartW, chartY + chartH), 4.0f, 4.0f);
-    if (pTrackBg) rt->FillRoundedRectangle(chartRc, pTrackBg);
-    if (pCardBorder) rt->DrawRoundedRectangle(chartRc, pCardBorder, 0.8f);
+    if (m_brushes.pTrackBg) rt->FillRoundedRectangle(chartRc, m_brushes.pTrackBg);
+    if (m_brushes.pCardBorder) rt->DrawRoundedRectangle(chartRc, m_brushes.pCardBorder, 0.8f);
 
-    DrawWaveform(rt, chartX, chartY, chartW, chartH, m_snapshot.gpuHistory, 100.0f, pal.GpuCyan, pGridLine, pTextMuted, L"100%", L"50%");
-
-    if (pCardBg) pCardBg->Release();
-    if (pCardBorder) pCardBorder->Release();
-    if (pTextPrimary) pTextPrimary->Release();
-    if (pTextSecondary) pTextSecondary->Release();
-    if (pGpuBrush) pGpuBrush->Release();
-    if (pTrackBg) pTrackBg->Release();
-    if (pGridLine) pGridLine->Release();
-    if (pTextMuted) pTextMuted->Release();
+    DrawWaveform(
+        rt, chartX, chartY, chartW, chartH,
+        m_snapshot.gpuHistory, 100.0f,
+        m_brushes.pGpuCyan, m_brushes.pGpuGradBrush,
+        pal.GpuCyan, m_brushes.pGridLine, m_brushes.pTextMuted,
+        L"100%", L"50%"
+    );
 
     curY += cardH + 7.0f;
 }
@@ -820,31 +896,17 @@ void FlyoutWindow::DrawDiskSection(ID2D1DCRenderTarget* rt, float& curY, float w
     float startX = 12.0f;
     float cardH = 26.0f + static_cast<float>(m_snapshot.disks.size()) * 26.0f;
 
-    ID2D1SolidColorBrush* pCardBg = nullptr;
-    ID2D1SolidColorBrush* pCardBorder = nullptr;
-    ID2D1SolidColorBrush* pTextPrimary = nullptr;
-    ID2D1SolidColorBrush* pTextSecondary = nullptr;
-    ID2D1SolidColorBrush* pDiskAmber = nullptr;
-    ID2D1SolidColorBrush* pTrackBg = nullptr;
-
-    rt->CreateSolidColorBrush(pal.CardBg, &pCardBg);
-    rt->CreateSolidColorBrush(pal.CardBorder, &pCardBorder);
-    rt->CreateSolidColorBrush(pal.TextPrimary, &pTextPrimary);
-    rt->CreateSolidColorBrush(pal.TextSecondary, &pTextSecondary);
-    rt->CreateSolidColorBrush(pal.DiskAmber, &pDiskAmber);
-    rt->CreateSolidColorBrush(pal.TrackBg, &pTrackBg);
-
     D2D1_ROUNDED_RECT cardRc = D2D1::RoundedRect(D2D1::RectF(startX, curY, startX + width, curY + cardH), 9.0f, 9.0f);
-    if (pCardBg) rt->FillRoundedRectangle(cardRc, pCardBg);
-    if (pCardBorder) rt->DrawRoundedRectangle(cardRc, pCardBorder, 1.0f);
+    if (m_brushes.pCardBg) rt->FillRoundedRectangle(cardRc, m_brushes.pCardBg);
+    if (m_brushes.pCardBorder) rt->DrawRoundedRectangle(cardRc, m_brushes.pCardBorder, 1.0f);
 
     // Vector Disk Icon
-    DrawDiskIcon(rt, startX + 10.0f, curY + 6.0f, pTextSecondary);
+    DrawDiskIcon(rt, startX + 10.0f, curY + 6.0f, m_brushes.pTextSecondary);
 
-    if (pTextSecondary && m_renderer.GetFormatLabel()) {
+    if (m_brushes.pTextSecondary && m_renderer.GetFormatLabel()) {
         std::wstring header = L"本地磁盘存储";
         rt->DrawTextW(header.c_str(), (UINT32)header.length(), m_renderer.GetFormatLabel(),
-            D2D1::RectF(startX + 28.0f, curY + 4.5f, startX + width - 10.0f, curY + 20.0f), pTextSecondary);
+            D2D1::RectF(startX + 28.0f, curY + 4.5f, startX + width - 10.0f, curY + 20.0f), m_brushes.pTextSecondary);
     }
 
     float diskY = curY + 24.0f;
@@ -854,25 +916,22 @@ void FlyoutWindow::DrawDiskSection(ID2D1DCRenderTarget* rt, float& curY, float w
         float pct = (disk.totalBytes > 0) ? (static_cast<float>(disk.totalBytes - disk.freeBytes) / disk.totalBytes) : 0.0f;
 
         // Drive tag badge (e.g. "C:\")
-        ID2D1SolidColorBrush* pPillBg = nullptr;
-        rt->CreateSolidColorBrush(pal.PillBg, &pPillBg);
-        if (pPillBg) {
+        if (m_brushes.pPillBg) {
             D2D1_ROUNDED_RECT driveRc = D2D1::RoundedRect(D2D1::RectF(startX + 10.0f, diskY, startX + 32.0f, diskY + 18.0f), 3.5f, 3.5f);
-            rt->FillRoundedRectangle(driveRc, pPillBg);
-            pPillBg->Release();
+            rt->FillRoundedRectangle(driveRc, m_brushes.pPillBg);
         }
 
-        if (pTextPrimary && m_renderer.GetFormatBoldTiny()) {
+        if (m_brushes.pTextPrimary && m_renderer.GetFormatBoldTiny()) {
             rt->DrawTextW(disk.drive.c_str(), (UINT32)disk.drive.length(), m_renderer.GetFormatBoldTiny(),
-                D2D1::RectF(startX + 10.0f, diskY - 1.0f, startX + 32.0f, diskY + 18.0f), pTextPrimary);
+                D2D1::RectF(startX + 10.0f, diskY - 1.0f, startX + 32.0f, diskY + 18.0f), m_brushes.pTextPrimary);
         }
 
         // Capacity text (e.g. "106 / 376 GB (28%)")
         wchar_t lineText[64];
         swprintf_s(lineText, L"%.0f / %.0f GB (%.0f%%)", used, total, pct * 100.0f);
-        if (pTextSecondary && m_renderer.GetFormatSmall()) {
+        if (m_brushes.pTextSecondary && m_renderer.GetFormatSmall()) {
             rt->DrawTextW(lineText, (UINT32)wcslen(lineText), m_renderer.GetFormatSmall(),
-                D2D1::RectF(startX + 38.0f, diskY + 1.0f, startX + 172.0f, diskY + 18.0f), pTextSecondary);
+                D2D1::RectF(startX + 38.0f, diskY + 1.0f, startX + 172.0f, diskY + 18.0f), m_brushes.pTextSecondary);
         }
 
         // Mini pill progress bar with warm amber fill
@@ -881,24 +940,17 @@ void FlyoutWindow::DrawDiskSection(ID2D1DCRenderTarget* rt, float& curY, float w
         float barH = 10.0f;
 
         D2D1_ROUNDED_RECT trackRc = D2D1::RoundedRect(D2D1::RectF(barX, diskY + 4.0f, barX + barW, diskY + 4.0f + barH), 5.0f, 5.0f);
-        if (pTrackBg) rt->FillRoundedRectangle(trackRc, pTrackBg);
-        if (pCardBorder) rt->DrawRoundedRectangle(trackRc, pCardBorder, 0.8f);
+        if (m_brushes.pTrackBg) rt->FillRoundedRectangle(trackRc, m_brushes.pTrackBg);
+        if (m_brushes.pCardBorder) rt->DrawRoundedRectangle(trackRc, m_brushes.pCardBorder, 0.8f);
 
         float fillW = barW * std::clamp(pct, 0.0f, 1.0f);
-        if (fillW > 3.0f && pDiskAmber) {
+        if (fillW > 3.0f && m_brushes.pDiskAmber) {
             D2D1_ROUNDED_RECT fillRc = D2D1::RoundedRect(D2D1::RectF(barX, diskY + 4.0f, barX + fillW, diskY + 4.0f + barH), 5.0f, 5.0f);
-            rt->FillRoundedRectangle(fillRc, pDiskAmber);
+            rt->FillRoundedRectangle(fillRc, m_brushes.pDiskAmber);
         }
 
         diskY += 24.0f;
     }
-
-    if (pCardBg) pCardBg->Release();
-    if (pCardBorder) pCardBorder->Release();
-    if (pTextPrimary) pTextPrimary->Release();
-    if (pTextSecondary) pTextSecondary->Release();
-    if (pDiskAmber) pDiskAmber->Release();
-    if (pTrackBg) pTrackBg->Release();
 
     curY += cardH + 7.0f;
 }
