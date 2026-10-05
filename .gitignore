@@ -47,6 +47,11 @@ crash.log
 # Test-generated screenshots
 /test/*.png
 
+# Keep only a lightweight Figma outline in version control.
+# Detailed handoffs, screenshots, exports and state snapshots stay local.
+/design/*
+!/design/Figma设计大纲.md
+
 # Temporary and editor files
 *.tmp
 *.temp

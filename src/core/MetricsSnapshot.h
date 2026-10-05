@@ -54,6 +54,18 @@ struct MetricHistory {
     }
 };
 
+struct PhysicalDiskInfo {
+    std::wstring id; // PnP device instance ID, never a list index.
+    uint32_t number = 0;
+    std::wstring model, busType;
+    uint64_t capacityBytes = 0, readBps = 0, writeBps = 0;
+    bool throughputValid = false, statisticsValid = false;
+    float activePercent = 0, responseTimeMs = 0;
+    MetricHistory readHistory, writeHistory;
+    std::vector<DiskInfo> volumes;
+    std::wstring status;
+};
+
 struct MetricsSnapshot {
     // CPU
     float cpuUsageTotal = 0.0f;
@@ -73,6 +85,9 @@ struct MetricsSnapshot {
     uint64_t availPhysMem = 0;
     uint64_t usedPhysMem = 0;
     uint64_t memInUseBytes = 0;          // 正在使用
+    // Only true for explicitly measured, disjoint in-use / standby / free counters.
+    // SystemCache and proportional estimates do not satisfy this contract.
+    bool memoryCompositionValid = false;
     uint64_t memStandbyCacheBytes = 0;   // 待机缓存
     uint64_t memFreeBytes = 0;           // 空闲
     uint64_t memCommittedBytes = 0;      // 已提交
@@ -106,6 +121,7 @@ struct MetricsSnapshot {
 
     // Disk
     std::vector<DiskInfo> disks;
+    std::vector<PhysicalDiskInfo> physicalDisks;
     uint64_t diskReadBps = 0;
     uint64_t diskWriteBps = 0;
     MetricHistory diskHistory;      // last 60 points (RingBuffer)
@@ -113,6 +129,7 @@ struct MetricsSnapshot {
     MetricHistory diskWriteHistory; // last 60 points (RingBuffer)
     std::wstring diskModelName;     // e.g. L"Samsung 980 PRO"
     std::wstring diskBusType;       // e.g. L"1 TB • NVMe"
+    bool diskStatisticsValid = false; // Real measured activity / latency, not placeholders.
     float diskActivePercent = 0.0f; // 活动时间 (e.g. 12%)
     float diskResponseTimeMs = 0.0f;// 平均响应时间 (e.g. 0.8 ms)
 

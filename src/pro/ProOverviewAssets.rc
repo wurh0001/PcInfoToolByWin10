@@ -1,0 +1,13 @@
+#include <windows.h>
+201 RCDATA "assets/thermometer.png"
+202 RCDATA "assets/expand.png"
+203 RCDATA "assets/pin.png"
+204 RCDATA "assets/close.png"
+205 RCDATA "assets/chevron.png"
+206 RCDATA "assets/clock.png"
+207 RCDATA "assets/settings.png"
+208 RCDATA "assets/settings-cpu.png"
+209 RCDATA "assets/settings-gpu.png"
+210 RCDATA "assets/settings-memory.png"
+211 RCDATA "assets/disk-disclosure.png"
+212 RCDATA "assets/disk-selected.png"

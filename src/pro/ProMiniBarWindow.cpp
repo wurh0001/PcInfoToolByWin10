@@ -3,24 +3,27 @@
 #include "ProMiniBarTooltipWindow.h"
 #include "../ui/DpiHelper.h"
 #include "../ui/AcrylicHelper.h"
+#include "../core/ConfigManager.h"
 #include <windowsx.h>
 #include <cwchar>
 #include <cstdio>
 #include <algorithm>
+#include <cmath>
 
 static const wchar_t* kProMiniBarClassName = L"PcInfoToolProMiniBarClass";
 
 ProMiniBarWindow::ProMiniBarWindow() {
     m_pDashboard = new ProDashboardWindow();
     m_pTooltip = new ProMiniBarTooltipWindow();
-    m_pTooltip->SetClickCallback([this](int seg) {
-        OnSegmentClick(seg);
-    });
 
     if (m_pDashboard) {
+        const auto appearance=ConfigManager::LoadProAppearance();
+        m_pDashboard->SetAppearance(appearance.themeMode,appearance.layoutMode,appearance.glassOpacity);
         m_pDashboard->SetOnSettingsChanged([this](const ProDashboardWindow::SettingsState& s) {
+            m_pDashboard->SetAppearanceSaveFailed(!ConfigManager::SaveProAppearance({s.themeMode,s.layoutMode,s.glassOpacity}));
             ReleaseBrushes();
             if (m_pTooltip) {
+                m_pTooltip->SetPureWhite(m_pDashboard->IsPureWhite());
                 m_pTooltip->SetOpacity(m_pDashboard->GetTooltipBgAlpha());
             }
             Render();
@@ -63,12 +66,19 @@ void ProMiniBarWindow::ReleaseBrushes() {
 void ProMiniBarWindow::EnsureBrushes(ID2D1DCRenderTarget* rt) {
     if (m_pBgBrush) return;
 
-    // Light frosted glass palette matching Figma tokens
-    float bgAlpha = m_pDashboard ? m_pDashboard->GetMiniBarBgAlpha() : 0.44f;
-
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.929f, 0.945f, 0.973f, bgAlpha), &m_pBgBrush);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.761f, 0.796f, 0.851f, 0.85f), &m_pBorderBrush);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.761f, 0.796f, 0.851f, 0.75f), &m_pSepBrush);
+    // Theme palette matching Figma tokens
+    bool isPureWhite = m_pDashboard ? m_pDashboard->IsPureWhite() : false;
+    if (isPureWhite) {
+        // 纯白主题: 主背景 #FFFFFF alpha 1.0, 描边/分割线 #DDE3EB 100%
+        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &m_pBgBrush);
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.867f, 0.890f, 0.922f, 1.0f), &m_pBorderBrush); // #DDE3EB
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.867f, 0.890f, 0.922f, 1.0f), &m_pSepBrush);    // #DDE3EB
+    } else {
+        float bgAlpha = m_pDashboard ? m_pDashboard->GetMiniBarBgAlpha() : 0.44f;
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.929f, 0.945f, 0.973f, bgAlpha), &m_pBgBrush);
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.761f, 0.796f, 0.851f, 0.85f), &m_pBorderBrush);
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.761f, 0.796f, 0.851f, 0.75f), &m_pSepBrush);
+    }
 
     rt->CreateSolidColorBrush(D2D1::ColorF(0.098f, 0.153f, 0.224f, 1.0f), &m_pTextPrimary);    // #192739
     rt->CreateSolidColorBrush(D2D1::ColorF(0.325f, 0.396f, 0.478f, 1.0f), &m_pTextSecondary);  // #53657A
@@ -89,10 +99,10 @@ RECT ProMiniBarWindow::GetWindowRectDip() const {
     RECT rc = { 0, 0, 0, 0 };
     if (m_hwnd) {
         GetWindowRect(m_hwnd, &rc);
-        rc.left = static_cast<LONG>(rc.left / m_dpiScale);
-        rc.top = static_cast<LONG>(rc.top / m_dpiScale);
-        rc.right = static_cast<LONG>(rc.right / m_dpiScale);
-        rc.bottom = static_cast<LONG>(rc.bottom / m_dpiScale);
+        rc.left = static_cast<LONG>(rc.left / m_dpiScale + kShadowApron);
+        rc.top = static_cast<LONG>(rc.top / m_dpiScale + kShadowApron);
+        rc.right = rc.left + static_cast<LONG>(m_dipWidth);
+        rc.bottom = rc.top + static_cast<LONG>(m_dipHeight);
     }
     return rc;
 }
@@ -107,14 +117,14 @@ bool ProMiniBarWindow::Create() {
 
     HWND hDesk = GetDesktopWindow();
     m_dpiScale = DpiHelper::GetScaleForWindow(hDesk);
-    m_pixelWidth = static_cast<int>(m_dipWidth * m_dpiScale + 0.5f);
-    m_pixelHeight = static_cast<int>(m_dipHeight * m_dpiScale + 0.5f);
+    m_pixelWidth = static_cast<int>((m_dipWidth + 2 * kShadowApron) * m_dpiScale + 0.5f);
+    m_pixelHeight = static_cast<int>((m_dipHeight + 2 * kShadowApron) * m_dpiScale + 0.5f);
 
     RECT workArea;
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
     int screenW = workArea.right - workArea.left;
     int posX = workArea.left + (screenW - m_pixelWidth) / 2;
-    int posY = workArea.top + static_cast<int>(12 * m_dpiScale);
+    int posY = workArea.top + static_cast<int>((12 - kShadowApron) * m_dpiScale);
 
     m_hwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
@@ -137,6 +147,7 @@ bool ProMiniBarWindow::Create() {
     if (m_pTooltip) {
         m_pTooltip->Create(m_hwnd);
         if (m_pDashboard) {
+            m_pTooltip->SetPureWhite(m_pDashboard->IsPureWhite());
             m_pTooltip->SetOpacity(m_pDashboard->GetTooltipBgAlpha());
         }
     }
@@ -169,10 +180,23 @@ void ProMiniBarWindow::OnTimer() {
         m_pDashboard->UpdateSnapshot(m_snapshot);
     }
     if (m_pTooltip && m_pTooltip->IsVisible() && m_hoveredSegment >= 0 && m_hoveredSegment <= 3) {
-        RECT barRect = GetWindowRectDip();
-        m_pTooltip->Show(m_hoveredSegment, barRect.left, barRect.bottom, m_snapshot, m_dpiScale);
+        ShowHoverPeek();
     }
     Render();
+}
+
+void ProMiniBarWindow::ShowHoverPeek() {
+    if (!m_pTooltip) return;
+    if (m_isDragging || m_hoveredSegment < 0 || m_hoveredSegment > 3 || !m_pDashboard || m_pDashboard->IsVisible()) {
+        m_pTooltip->Hide(); return;
+    }
+    RECT bar{}; GetWindowRect(m_hwnd, &bar);
+    bar.left += static_cast<LONG>(std::lround(kShadowApron * m_dpiScale));
+    bar.top += static_cast<LONG>(std::lround(kShadowApron * m_dpiScale));
+    bar.right = bar.left + static_cast<LONG>(std::lround(m_dipWidth * m_dpiScale));
+    bar.bottom = bar.top + static_cast<LONG>(std::lround(m_dipHeight * m_dpiScale));
+    m_pTooltip->SetTempUnit(m_pDashboard->GetSettings().tempUnit);
+    m_pTooltip->Show(m_hoveredSegment, bar, m_snapshot, m_dpiScale);
 }
 
 void ProMiniBarWindow::ToggleDashboard() {
@@ -339,14 +363,104 @@ void ProMiniBarWindow::DrawChevron(ID2D1DCRenderTarget* rt, float cx, float cy, 
     }
 }
 
+void ProMiniBarWindow::DrawWhiteBar(ID2D1DCRenderTarget* rt) {
+    auto* dw = m_renderer.GetDWriteFactory();
+    const auto blue = D2D1::ColorF(0x266BCE), amber = D2D1::ColorF(0xA87517);
+    const auto green = D2D1::ColorF(0x138873), coral = D2D1::ColorF(0xBC5648);
+    const auto muted = D2D1::ColorF(0x53657A);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    rt->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF), &brush);
+    if (!brush) return;
+    auto text = [&](const wchar_t* value, D2D1_RECT_F box, float size, D2D1_COLOR_F color, DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_MEDIUM) {
+        m_overviewVisuals.Text(rt, dw, value, box, size, 16, weight, color);
+    };
+    m_overviewVisuals.Shadow(rt, D2D1::RectF(0, 0, 380, 32), 16, 10, 0, 3, .06f);
+    const auto capsule = D2D1::RoundedRect(D2D1::RectF(.5f, .5f, 379.5f, 31.5f), 15.5f, 15.5f);
+    rt->FillRoundedRectangle(capsule, brush.Get());
+    brush->SetColor(D2D1::ColorF(0xDDE3EB)); rt->DrawRoundedRectangle(capsule, brush.Get(), 1);
+    m_segmentRects[0] = D2D1::RectF(9, 6, 89, 26);
+    m_segmentRects[1] = D2D1::RectF(96, 6, 132, 26);
+    m_segmentRects[2] = D2D1::RectF(139, 6, 219, 26);
+    m_segmentRects[3] = D2D1::RectF(226, 6, 350, 26);
+    m_segmentRects[4] = D2D1::RectF(353, 6, 373, 26);
+    if (m_hoveredSegment >= 0 && m_hoveredSegment < 4) {
+        const D2D1_COLOR_F highlight[] = {D2D1::ColorF(0x266BCE,.1f), D2D1::ColorF(0xBC5648,.1f), D2D1::ColorF(0xA87517,.1f), D2D1::ColorF(0x138873,.1f)};
+        brush->SetColor(highlight[m_hoveredSegment]); rt->FillRoundedRectangle(D2D1::RoundedRect(m_segmentRects[m_hoveredSegment], 6, 6), brush.Get());
+    }
+    for (int i = 0; i < 3; ++i) {
+        const float x[] = {92, 135, 222};
+        brush->SetColor(D2D1::ColorF(0xDDE3EB, i == 0 ? .7f : .4f));
+        rt->FillRectangle(D2D1::RectF(x[i], 9, x[i]+1, 23), brush.Get());
+    }
+    wchar_t value[32];
+    if(std::isfinite(m_snapshot.cpuUsageTotal) && m_snapshot.cpuUsageTotal>=0)
+        swprintf_s(value, L"%.0f%%", std::clamp(m_snapshot.cpuUsageTotal, 0.0f, 100.0f));
+    else wcscpy_s(value,L"—");
+    const float labelW = m_overviewVisuals.Measure(dw, L"CPU", 9, DWRITE_FONT_WEIGHT_MEDIUM);
+    const float numberW = m_overviewVisuals.Measure(dw, value, 12, DWRITE_FONT_WEIGHT_MEDIUM);
+    float x = 9 + (80 - labelW - numberW - 28) * .5f;
+    text(L"CPU", D2D1::RectF(x, 8, x+labelW, 24), 9, muted);
+    x += labelW + 4; text(value, D2D1::RectF(x, 8, x+numberW+1, 24), 12, blue);
+    x += numberW + 4;
+    if (m_snapshot.cpuHistory.Size() >= 2) DrawMiniSparkline(rt, x, 11, 20, 10, m_snapshot.cpuHistory, 100, blue);
+
+    m_overviewVisuals.DrawIcon(rt, ProOverviewVisuals::Thermometer, D2D1::RectF(97, 9, 107, 23));
+    if (m_snapshot.cpuTempC > 0) {
+        const bool fahrenheit = m_pDashboard->GetSettings().tempUnit == 1;
+        swprintf_s(value, L"%.0f°", fahrenheit ? m_snapshot.cpuTempC * 1.8f + 32 : m_snapshot.cpuTempC);
+    } else wcscpy_s(value, L"—");
+    const float tempSize = m_overviewVisuals.Measure(dw, value, 11, DWRITE_FONT_WEIGHT_MEDIUM) > 23 ? 10 : 11;
+    text(value, D2D1::RectF(109, 8, 132, 24), tempSize, coral);
+
+    swprintf_s(value, L"%.0f%%", std::clamp(m_snapshot.memoryUsagePercent, 0.0f, 100.0f));
+    const float ramLabelW = m_overviewVisuals.Measure(dw, L"RAM", 9, DWRITE_FONT_WEIGHT_MEDIUM);
+    const float ramValueW = m_overviewVisuals.Measure(dw, value, 12, DWRITE_FONT_WEIGHT_MEDIUM);
+    x = 139 + (80 - ramLabelW - ramValueW - 22) * .5f;
+    text(L"RAM", D2D1::RectF(x, 8, x+ramLabelW, 24), 9, muted);
+    x += ramLabelW + 4; text(value, D2D1::RectF(x, 8, x+ramValueW+1, 24), 12, amber);
+    x += ramValueW + 4; brush->SetColor(amber);
+    for (int i = 0; i < 5; ++i) rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x+3*i, 12.5f, x+3*i+2, 19.5f), 1, 1), brush.Get());
+
+    if (m_snapshot.downloadHistory.Size() >= 2) DrawMiniSparkline(rt, 226, 12, 16, 8, m_snapshot.downloadHistory, 1000000, green);
+    const double down = m_snapshot.downloadSpeedBps / 1000000.0;
+    swprintf_s(value, down >= 100 ? L"%.0f" : L"%.1f", down);
+    const float downW = m_overviewVisuals.Measure(dw, value, 12, DWRITE_FONT_WEIGHT_MEDIUM);
+    const float valueSize = downW > 28 ? 10 : 12;
+    const float actualW = std::min(28.0f, m_overviewVisuals.Measure(dw, value, valueSize, DWRITE_FONT_WEIGHT_MEDIUM));
+    text(value, D2D1::RectF(246, 8, 246+actualW+1, 24), valueSize, green);
+    text(L"MB/s", D2D1::RectF(250+actualW, 8, 296, 24), 9, muted, DWRITE_FONT_WEIGHT_NORMAL);
+    if (m_snapshot.uploadHistory.Size() >= 2) DrawMiniSparkline(rt, 300, 13.5f, 16, 5, m_snapshot.uploadHistory, 1000000, blue);
+    const double up = m_snapshot.uploadSpeedBps / 1000000.0;
+    swprintf_s(value, up >= 100 ? L"%.0f" : up >= 10 ? L"%.1f" : L"%.2f", up);
+    const float upSize = m_overviewVisuals.Measure(dw, value, 12, DWRITE_FONT_WEIGHT_MEDIUM) > 30 ? 10 : 12;
+    text(value, D2D1::RectF(320, 8, 350, 24), upSize, blue);
+    m_overviewVisuals.Shadow(rt, m_segmentRects[4], 10, 8, 0, 4, .25f, 0);
+    brush->SetColor(m_chevronHover ? D2D1::ColorF(0xEDF3FB) : D2D1::ColorF(0xFFFFFF));
+    rt->FillRoundedRectangle(D2D1::RoundedRect(m_segmentRects[4], 10, 10), brush.Get());
+    const bool open = m_pDashboard->IsVisible() && m_pDashboard->GetMode() == ProDashboardWindow::Mode_FullAccordion;
+    D2D1_MATRIX_3X2_F transform; rt->GetTransform(&transform);
+    if (open) rt->SetTransform(D2D1::Matrix3x2F::Rotation(180, D2D1::Point2F(363, 16)) * transform);
+    m_overviewVisuals.DrawIcon(rt, ProOverviewVisuals::Expand, D2D1::RectF(357, 10, 369, 22));
+    rt->SetTransform(transform);
+}
+
 void ProMiniBarWindow::Render() {
     ID2D1DCRenderTarget* rt = m_renderer.BeginDraw();
     if (!rt) return;
 
     EnsureBrushes(rt);
 
-    rt->SetTransform(D2D1::Matrix3x2F::Scale(m_dpiScale, m_dpiScale));
+    rt->SetTransform(D2D1::Matrix3x2F::Translation(kShadowApron, kShadowApron) * D2D1::Matrix3x2F::Scale(m_dpiScale, m_dpiScale));
     rt->Clear(D2D1::ColorF(0, 0, 0, 0));
+
+    if (m_pDashboard && m_pDashboard->IsPureWhite()) {
+        const auto textMode = rt->GetTextAntialiasMode();
+        rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        DrawWhiteBar(rt);
+        rt->SetTextAntialiasMode(textMode);
+        m_renderer.EndDraw();
+        return;
+    }
 
     float W = m_dipWidth;
     float H = m_dipHeight;
@@ -542,7 +656,46 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
     if (!pThis) return DefWindowProcW(hwnd, msg, wParam, lParam);
 
     switch (msg) {
+    case WM_KEYDOWN:
+        if(wParam==VK_ESCAPE && pThis->m_pDashboard && pThis->m_pDashboard->IsVisible()) {
+            pThis->m_pDashboard->Hide();return 0;
+        }
+        if(wParam==VK_TAB && pThis->m_pDashboard && pThis->m_pDashboard->IsVisible()) {
+            const HWND panel=pThis->m_pDashboard->GetHwnd();
+            SetForegroundWindow(panel);SetFocus(panel);SendMessageW(panel,WM_KEYDOWN,VK_TAB,lParam);return 0;
+        }
+        break;
+    case WM_DPICHANGED: {
+        KillTimer(hwnd, 2);
+        pThis->m_hoveredSegment = -1;
+        pThis->m_chevronHover = false;
+        if (pThis->m_pTooltip) pThis->m_pTooltip->Hide();
+        pThis->m_dpiScale = HIWORD(wParam) / 96.0f;
+        pThis->m_pixelWidth = static_cast<int>(std::lround((pThis->m_dipWidth + 2*kShadowApron)*pThis->m_dpiScale));
+        pThis->m_pixelHeight = static_cast<int>(std::lround((pThis->m_dipHeight + 2*kShadowApron)*pThis->m_dpiScale));
+        pThis->m_renderer.Resize(pThis->m_pixelWidth,pThis->m_pixelHeight);
+        pThis->ReleaseBrushes();
+        const auto* suggested = reinterpret_cast<const RECT*>(lParam);
+        SetWindowPos(hwnd,nullptr,suggested->left,suggested->top,pThis->m_pixelWidth,pThis->m_pixelHeight,SWP_NOACTIVATE|SWP_NOZORDER);
+        pThis->Render();
+        return 0;
+    }
+    case WM_CAPTURECHANGED:
+        pThis->m_isDragging = false;
+        return 0;
+    case WM_NCHITTEST: {
+        POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        ScreenToClient(hwnd, &point);
+        const float x = point.x / pThis->m_dpiScale - kShadowApron;
+        const float y = point.y / pThis->m_dpiScale - kShadowApron;
+        return (x < 0 || y < 0 || x >= pThis->m_dipWidth || y >= pThis->m_dipHeight) ? HTTRANSPARENT : HTCLIENT;
+    }
     case WM_TIMER:
+        if (wParam == 2) {
+            KillTimer(hwnd, 2);
+            pThis->ShowHoverPeek();
+            return 0;
+        }
         if (wParam == 1) {
             pThis->OnTimer();
         }
@@ -555,6 +708,8 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
         return 0;
 
     case WM_LBUTTONDOWN: {
+        KillTimer(hwnd, 2);
+        if (pThis->m_pTooltip) pThis->m_pTooltip->Hide();
         GetCursorPos(&pThis->m_ptDown);
         pThis->m_dragStartCursor = pThis->m_ptDown;
         pThis->m_isDragging = true;
@@ -592,8 +747,8 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
 
         int px = GET_X_LPARAM(lParam);
         int py = GET_Y_LPARAM(lParam);
-        float dipX = px / pThis->m_dpiScale;
-        float dipY = py / pThis->m_dpiScale;
+        float dipX = px / pThis->m_dpiScale - kShadowApron;
+        float dipY = py / pThis->m_dpiScale - kShadowApron;
 
         int newHover = -1;
         for (int i = 0; i < 5; ++i) {
@@ -609,16 +764,9 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
             pThis->m_chevronHover = (newHover == 4);
             pThis->Render();
 
-            if (pThis->m_hoveredSegment >= 0 && pThis->m_hoveredSegment <= 3) {
-                if (pThis->m_pDashboard && !pThis->m_pDashboard->IsVisible()) {
-                    RECT barRect = pThis->GetWindowRectDip();
-                    pThis->m_pTooltip->Show(pThis->m_hoveredSegment, barRect.left, barRect.bottom, pThis->m_snapshot, pThis->m_dpiScale);
-                } else {
-                    pThis->m_pTooltip->Hide();
-                }
-            } else {
-                pThis->m_pTooltip->Hide();
-            }
+            KillTimer(hwnd, 2);
+            if (pThis->m_pTooltip) pThis->m_pTooltip->Hide();
+            if (newHover >= 0 && newHover <= 3) SetTimer(hwnd, 2, 250, nullptr);
         }
 
         if (!pThis->m_mouseHover) {
@@ -636,6 +784,7 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
     }
 
     case WM_MOUSELEAVE:
+        KillTimer(hwnd, 2);
         pThis->m_mouseHover = false;
         pThis->m_hoveredSegment = -1;
         pThis->m_chevronHover = false;
@@ -651,8 +800,8 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
             if (!pThis->m_hasMoved) {
                 int px = GET_X_LPARAM(lParam);
                 int py = GET_Y_LPARAM(lParam);
-                float dipX = px / pThis->m_dpiScale;
-                float dipY = py / pThis->m_dpiScale;
+                float dipX = px / pThis->m_dpiScale - kShadowApron;
+                float dipY = py / pThis->m_dpiScale - kShadowApron;
 
                 int clickedSegment = -1;
                 for (int i = 0; i < 5; ++i) {

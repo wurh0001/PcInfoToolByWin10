@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 # 创建名为 PcInfoTool 的 C++ 项目。
-project(PcInfoTool LANGUAGES CXX)
+project(PcInfoTool LANGUAGES CXX RC)
 
 # 使用 C++20 标准，并要求编译器必须支持 C++20。
 set(CMAKE_CXX_STANDARD 20)
@@ -25,6 +25,7 @@ add_definitions(-DUNICODE -D_UNICODE -DNOMINMAX -DWIN32_LEAN_AND_MEAN)
 # ==========================================
 set(CORE_SOURCES
     "src/core/MetricsCollector.cpp"
+    "src/core/PhysicalDiskSampler.cpp"
     "src/core/MetricsCollector.h"
     "src/core/MetricsSnapshot.h"
     "src/core/ConfigManager.h"
@@ -75,6 +76,8 @@ target_link_libraries(PcInfoTool PRIVATE ${SYSTEM_LIBS})
 # ==========================================
 set(PRO_SOURCES
     ${CORE_SOURCES}
+    "src/pro/ProOverviewVisuals.cpp"
+    "src/pro/ProOverviewAssets.rc"
     "src/ui/CustomContextMenu.cpp"
     "src/ui/CustomContextMenu.h"
     "src/pro/ProMiniBarWindow.cpp"
@@ -88,7 +91,15 @@ set(PRO_SOURCES
 )
 
 add_executable(PcInfoTool-Pro WIN32 ${PRO_SOURCES})
-target_link_libraries(PcInfoTool-Pro PRIVATE ${SYSTEM_LIBS})
+target_link_libraries(PcInfoTool-Pro PRIVATE ${SYSTEM_LIBS} windowscodecs)
+
+option(PCINFO_BUILD_VISUAL_TESTS "Build offscreen overview/CPU renderer tests" OFF)
+if (PCINFO_BUILD_VISUAL_TESTS)
+    set(PRO_TEST_SOURCES ${PRO_SOURCES})
+    list(REMOVE_ITEM PRO_TEST_SOURCES "src/pro/main_pro.cpp")
+    add_executable(PcInfoTool-OverviewRenderTest ${PRO_TEST_SOURCES} "test/overview_render_test.cpp")
+    target_link_libraries(PcInfoTool-OverviewRenderTest PRIVATE ${SYSTEM_LIBS} windowscodecs)
+endif()
 
 
 # 编译性能测试工具 test_performance.exe 到 test 目录
@@ -100,4 +111,3 @@ if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_perf.cpp")
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/test"
     )
 endif()
-

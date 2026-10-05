@@ -7,6 +7,7 @@
 #include <cmath>
 #include <ctime>
 #include <algorithm>
+#include <cfloat>
 
 static const wchar_t* kProDashboardClassName = L"PcInfoToolProDashboardClass";
 
@@ -19,6 +20,8 @@ inline void SafeRelease(T** ppT) {
 }
 
 ProDashboardWindow::ProDashboardWindow() {
+    m_dipWidth = 360.0f;
+    m_dipHeight = 284.0f;
 }
 
 ProDashboardWindow::~ProDashboardWindow() {
@@ -51,14 +54,27 @@ void ProDashboardWindow::ReleaseBrushes() {
 void ProDashboardWindow::EnsureBrushes(ID2D1DCRenderTarget* rt) {
     if (m_pBgBrush) return;
 
-    // Light frosted glass palette matching Figma tokens (pro-v1-design-tokens.json)
-    // 窗口外壳半透柔和磨砂底色，透明度按分层材质模型计算（大面板保持 60%~96% 安全半透衬底，文字 100% 不透明）
-    float bgAlpha = GetDashboardBgAlpha();
-    rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, bgAlpha), &m_pBgBrush);           // Translucent frosted window bg #FFFFFF
-    rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.85f), &m_pBorderBrush);       // Border #FFFFFF alpha 85%
-    rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, std::min(0.98f, bgAlpha + 0.12f)), &m_pCardBgBrush);         // Translucent surface card
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.780f, 0.820f, 0.875f, 0.70f), &m_pCardBorderBrush);// Card Border #C2CBD9
-    rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.85f), &m_pCardHoverBrush);      // Hover white card
+    // Theme palette matching Figma tokens (Pure White & Light Glass)
+    if (IsPureWhite()) {
+        // 纯白主题开发契约:
+        // 主背景: #FFFFFF, alpha 1.0 (关闭模糊)
+        // 描边/分割线: #DDE3EB, 1 DIP
+        // 次级表面 (详情卡、普通按钮): #F7F9FC
+        // 悬停/选中表面 (指标行、外观标签): #EDF3FB
+        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &m_pBgBrush);
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.867f, 0.890f, 0.922f, 1.0f), &m_pBorderBrush);       // #DDE3EB
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.969f, 0.976f, 0.988f, 1.0f), &m_pCardBgBrush);       // #F7F9FC
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.867f, 0.890f, 0.922f, 1.0f), &m_pCardBorderBrush);   // #DDE3EB
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.929f, 0.953f, 0.984f, 1.0f), &m_pCardHoverBrush);    // #EDF3FB
+    } else {
+        // 亮色玻璃主题: 窗口外壳半透柔和磨砂底色
+        float bgAlpha = GetDashboardBgAlpha();
+        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, bgAlpha), &m_pBgBrush);           // Translucent frosted window bg #FFFFFF
+        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.85f), &m_pBorderBrush);       // Border #FFFFFF alpha 85%
+        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, std::min(0.98f, bgAlpha + 0.12f)), &m_pCardBgBrush);         // Translucent surface card
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.780f, 0.820f, 0.875f, 0.70f), &m_pCardBorderBrush);// Card Border #C2CBD9
+        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.85f), &m_pCardHoverBrush);      // Hover white card
+    }
 
     rt->CreateSolidColorBrush(D2D1::ColorF(0.098f, 0.153f, 0.224f, 1.0f), &m_pTextPrimary);     // Text #192739
     rt->CreateSolidColorBrush(D2D1::ColorF(0.325f, 0.396f, 0.478f, 1.0f), &m_pTextSecondary);   // Muted #53657A
@@ -123,32 +139,77 @@ float ProDashboardWindow::GetDetailCardHeight(int mod) {
 void ProDashboardWindow::UpdateDimensionsAndPosition() {
     float h = 0.0f;
     if (m_mode == Mode_DirectTemp) {
-        h = 420.0f; // Exact height for "CPU 温度独立页" (420 x 420)
+        h = 289.0f; // Figma 236:2468 (360 x 289)
     } else if (m_mode == Mode_DirectCpu) {
-        h = 420.0f; // Dedicated CPU direct card
+        h = 373.0f + (IsPureWhite() ? CpuCoreExtraHeight() : 0); // 236:2296
     } else if (m_mode == Mode_DirectMemory) {
-        h = 420.0f; // Dedicated Memory direct card
+        h = 387.0f; // Figma 236:2555 (360 x 387)
     } else if (m_mode == Mode_DirectNetwork) {
-        h = 420.0f; // Dedicated Network direct card
+        h = 301.0f; // Figma 236:2689 (360 x 301)
     } else if (m_mode == Mode_DirectGpu) {
-        h = 420.0f; // Dedicated GPU direct card
+        h = 360.0f; // Dedicated GPU direct card
     } else if (m_mode == Mode_DirectDisk) {
-        h = 420.0f; // Dedicated Disk direct card
+        h = 360.0f; // Dedicated Disk direct card
     } else if (m_mode == Mode_Settings) {
-        h = 504.0f; // Dedicated "偏好设置" (420 x 504)
-    } else {
-        float baseH = m_isPinned ? 371.0f : 355.0f; // 系统总览: 355 DIP, 固定总览: 371 DIP
-        if (m_expandedModule != Module_None && m_expandedModule < Module_Count) {
-            float detailCardH = GetDetailCardHeight(m_expandedModule);
-            h = baseH + 4.0f + detailCardH; // detail card height + gap
+        // Figma Section 06 spec: 360 宽设置面板
+        if (m_settings.activeTab == 0) {
+            h = m_settings.themeMode==0 ? 259.0f : 201.0f; // Glass-only extension; white Figma baseline remains 201.
+        } else if (m_settings.activeTab == 1) {
+            h = 278.0f; // 监控标签: 360 x 278 (折叠/默认态)
         } else {
-            h = baseH;
+            h = 260.0f; // 常规标签: 360 x 260 (Figma 266:4204)
+        }
+    } else {
+        // Mode_FullAccordion / Overview
+        bool isCompact = (m_settings.layoutMode == 1);
+        if (m_expandedModule == Module_None) {
+            h = m_isPinned ? 300.0f : 284.0f; // 360 x 284 (Figma 138:905, Pinned: 300 DIP Figma 138:2151)
+        } else {
+            if (isCompact) {
+                switch (m_expandedModule) {
+                case Module_CPU:     h = IsWhiteOverview() ? 559.0f + CpuCoreExtraHeight() : 549.0f; break; // Static visual baseline 223:1952
+                case Module_GPU:     h = IsWhiteOverview() ? 545.0f : 535.0f; break; // Static / GPU 223:2179 visual baseline
+                case Module_Memory:  h = IsWhiteOverview() ? 573.0f : 563.0f; break; // 184:1787 static visual baseline
+                case Module_Disk:    h = IsWhiteOverview() ? 538.0f : 528.0f; break; // Static 223:2367
+                case Module_Network: h = IsWhiteOverview() ? 487.0f : 477.0f; break; // Static 223:2558
+                case Module_Sensor:  h = IsWhiteOverview() ? 586.0f : 576.0f; break; // Static 223:2738
+                default:             h = 549.0f; break;
+                }
+            } else {
+                switch (m_expandedModule) {
+                case Module_CPU:     h = IsWhiteOverview() ? 637.0f + CpuCoreExtraHeight() : 627.0f; break; // 138:949
+                case Module_GPU:     h = IsWhiteOverview() ? 623.0f : 613.0f; break; // Figma 138:1406 / 138:1401
+                case Module_Memory:  h = IsWhiteOverview() ? 651.0f : 641.0f; break; // Figma 138:1494
+                case Module_Disk:    h = IsWhiteOverview() ? 616.0f : 606.0f; break; // Figma 138:1587
+                case Module_Network: h = IsWhiteOverview() ? 565.0f : 555.0f; break; // 138:1078
+                case Module_Sensor:  h = IsWhiteOverview() ? 664.0f : 654.0f; break; // Figma 138:1681
+                default:             h = 627.0f; break;
+                }
+            }
         }
     }
 
+    m_cpuFullHeight = IsWhiteCpu() ? h : 0;
+    MONITORINFO cpuMonitor{sizeof(MONITORINFO)};
+    const bool cpuAnchored=IsWhiteCpu() && m_anchorBarRectDip.right>m_anchorBarRectDip.left;
+    if(cpuAnchored) {
+        RECT bar{static_cast<LONG>(m_anchorBarRectDip.left*m_dpiScale),static_cast<LONG>(m_anchorBarRectDip.top*m_dpiScale),
+            static_cast<LONG>(m_anchorBarRectDip.right*m_dpiScale),static_cast<LONG>(m_anchorBarRectDip.bottom*m_dpiScale)};
+        GetMonitorInfoW(MonitorFromRect(&bar,MONITOR_DEFAULTTONEAREST),&cpuMonitor);
+        const float below=(cpuMonitor.rcWork.bottom-bar.bottom)/m_dpiScale-24;
+        const float above=(bar.top-cpuMonitor.rcWork.top)/m_dpiScale-24;
+        if(!m_cpuPlacementValid) {
+            RECT previous{};GetWindowRect(m_hwnd,&previous);
+            m_cpuAbove=IsWindowVisible(m_hwnd) ? previous.top+m_shadowApron*m_dpiScale<bar.top : below<std::min(h,373.f) && above>below;
+            m_cpuPlacementValid=true;
+        }
+        h=std::min(h,std::max(96.f,m_cpuAbove ? above : below));
+    } else if(!IsWhiteCpu()) {m_cpuPlacementValid=false;m_cpuScroll=0;}
     m_dipHeight = h;
-    int newPixelH = static_cast<int>(m_dipHeight * m_dpiScale + 0.5f);
-    int newPixelW = static_cast<int>(m_dipWidth * m_dpiScale + 0.5f);
+    m_cpuScroll=std::clamp(m_cpuScroll,0.f,std::max(0.f,m_cpuFullHeight-h));
+    m_shadowApron = ((m_mode==Mode_Settings&&m_settings.activeTab==0) || IsWhiteOverview() || IsWhiteCpu() || (IsPureWhite() && (m_mode==Mode_DirectMemory || m_mode==Mode_DirectNetwork || m_mode==Mode_DirectTemp))) ? ProOverviewLayout::ShadowApron : 0;
+    int newPixelH = static_cast<int>((m_dipHeight + 2 * m_shadowApron) * m_dpiScale + 0.5f);
+    int newPixelW = static_cast<int>((m_dipWidth + 2 * m_shadowApron) * m_dpiScale + 0.5f);
 
     if (newPixelH != m_pixelHeight || newPixelW != m_pixelWidth) {
         m_pixelHeight = newPixelH;
@@ -157,16 +218,24 @@ void ProDashboardWindow::UpdateDimensionsAndPosition() {
         ReleaseBrushes();
     }
 
-    if (m_anchorBarRectDip.right > 0) {
-        int posX = static_cast<int>((m_anchorBarRectDip.left + (m_anchorBarRectDip.right - m_anchorBarRectDip.left - m_dipWidth) * 0.5f) * m_dpiScale);
-        int posY = static_cast<int>((m_anchorBarRectDip.bottom + 8.0f) * m_dpiScale);
+    if (m_anchorBarRectDip.right > 0 || cpuAnchored) {
+        int posX = static_cast<int>((m_anchorBarRectDip.left + (m_anchorBarRectDip.right - m_anchorBarRectDip.left - m_dipWidth) * 0.5f - m_shadowApron) * m_dpiScale);
+        int posY = static_cast<int>((m_anchorBarRectDip.bottom + 16.0f - m_shadowApron) * m_dpiScale);
 
         RECT wa;
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
-        if (posX + m_pixelWidth > wa.right) posX = wa.right - m_pixelWidth - 8;
-        if (posX < wa.left) posX = wa.left + 8;
-        if (posY + m_pixelHeight > wa.bottom) {
-            posY = static_cast<int>((m_anchorBarRectDip.top - 8.0f) * m_dpiScale - m_pixelHeight);
+        if(cpuAnchored) wa=cpuMonitor.rcWork;
+        else SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+        // Clamp the visible panel, not its transparent apron: shadows are not layout width.
+        const int shadowPixels = static_cast<int>(m_shadowApron * m_dpiScale + .5f);
+        const int visibleWidth = static_cast<int>(m_dipWidth * m_dpiScale + .5f);
+        if (posX + shadowPixels + visibleWidth > wa.right) posX = wa.right - visibleWidth - 8 - shadowPixels;
+        if (posX + shadowPixels < wa.left) posX = wa.left + 8 - shadowPixels;
+        if (cpuAnchored) {
+            posY=static_cast<int>((m_cpuAbove ? m_anchorBarRectDip.top-16-m_dipHeight-m_shadowApron : m_anchorBarRectDip.bottom+16-m_shadowApron)*m_dpiScale);
+            const int minY=wa.top+8-shadowPixels,maxY=std::max<LONG>(minY,wa.bottom-8-static_cast<int>(m_dipHeight*m_dpiScale)-shadowPixels);
+            posY=std::clamp(posY,minY,maxY);
+        } else if (posY + m_pixelHeight - m_shadowApron * m_dpiScale > wa.bottom) {
+            posY = static_cast<int>((m_anchorBarRectDip.top - 16.0f - m_dipHeight - m_shadowApron) * m_dpiScale);
         }
 
         SetWindowPos(m_hwnd, HWND_TOPMOST, posX, posY, m_pixelWidth, m_pixelHeight, SWP_NOACTIVATE);
@@ -175,16 +244,21 @@ void ProDashboardWindow::UpdateDimensionsAndPosition() {
 
 void ProDashboardWindow::FollowBar(const RECT& barRectDip) {
     m_anchorBarRectDip = barRectDip;
+    m_cpuPlacementValid=false;
+    if (m_mode==Mode_Settings || IsWhiteOverview() || IsWhiteCpu() || (IsPureWhite() && (m_mode==Mode_DirectMemory || m_mode==Mode_DirectNetwork || m_mode==Mode_DirectTemp))) {
+        UpdateDimensionsAndPosition();
+        return;
+    }
     if (m_anchorBarRectDip.right > 0 && m_hwnd) {
         int posX = static_cast<int>((m_anchorBarRectDip.left + (m_anchorBarRectDip.right - m_anchorBarRectDip.left - m_dipWidth) * 0.5f) * m_dpiScale);
-        int posY = static_cast<int>((m_anchorBarRectDip.bottom + 8.0f) * m_dpiScale);
+        int posY = static_cast<int>((m_anchorBarRectDip.bottom + 16.0f) * m_dpiScale);
 
         RECT wa;
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
         if (posX + m_pixelWidth > wa.right) posX = wa.right - m_pixelWidth - 8;
         if (posX < wa.left) posX = wa.left + 8;
         if (posY + m_pixelHeight > wa.bottom) {
-            posY = static_cast<int>((m_anchorBarRectDip.top - 8.0f) * m_dpiScale - m_pixelHeight);
+            posY = static_cast<int>((m_anchorBarRectDip.top - 16.0f) * m_dpiScale - m_pixelHeight);
         }
 
         SetWindowPos(m_hwnd, HWND_TOPMOST, posX, posY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
@@ -200,11 +274,14 @@ void ProDashboardWindow::ShowNear(const RECT& barRectDip) {
 }
 
 void ProDashboardWindow::ShowDirectModule(WindowMode directMode, const RECT& barRectDip) {
+    m_diskMenuOpen=false;
     if (m_visible && m_mode == directMode) {
         Hide();
         return;
     }
+    if(m_mode!=directMode) {m_cpuScroll=0;m_focusedCpuCore=-1;m_cpuKeyboardFocus=false;}
     m_mode = directMode;
+    if(directMode==Mode_DirectTemp) {m_tempProbeActive=false;m_allSensorsHover=false;}
     m_anchorBarRectDip = barRectDip;
     m_visible = true;
     UpdateDimensionsAndPosition();
@@ -217,10 +294,13 @@ void ProDashboardWindow::ShowCpuTempDirect(const RECT& barRectDip) {
 }
 
 void ProDashboardWindow::ShowSettings(const RECT& barRectDip) {
+    if(m_mode!=Mode_Settings || !m_visible)m_settings.activeTab=0;
     ShowDirectModule(Mode_Settings, barRectDip);
 }
 
 void ProDashboardWindow::ShowFullDashboard(AccordionModule mod, const RECT& barRectDip) {
+    m_diskMenuOpen=false;
+    if(m_mode!=Mode_FullAccordion) {m_cpuScroll=0;m_focusedCpuCore=-1;m_cpuKeyboardFocus=false;}
     m_mode = Mode_FullAccordion;
     m_expandedModule = mod;
     m_anchorBarRectDip = barRectDip;
@@ -239,12 +319,15 @@ void ProDashboardWindow::ToggleDashboard(const RECT& barRectDip) {
 }
 
 void ProDashboardWindow::Hide() {
+    m_diskMenuOpen=false;m_diskMenuHover=-1;
     m_visible = false;
+    m_cpuPlacementValid=false;m_cpuKeyboardFocus=false;m_hoveredCpuCore=-1;m_focusedCpuCore=-1;m_cpuScroll=0;
     ShowWindow(m_hwnd, SW_HIDE);
 }
 
 void ProDashboardWindow::SetPinned(bool pin) {
     m_isPinned = pin;
+    UpdateDimensionsAndPosition();
     Render();
 }
 
@@ -257,7 +340,14 @@ void ProDashboardWindow::ExpandModule(AccordionModule mod) {
 }
 
 void ProDashboardWindow::UpdateSnapshot(const MetricsSnapshot& snapshot) {
+    const auto previousCores = m_snapshot.cpuCoreUsage.size();
     m_snapshot = snapshot;
+    ReconcileDiskSelection();
+    m_netSampleUnixSeconds = static_cast<uint64_t>(std::time(nullptr));
+    if (IsWhiteCpu() && previousCores != snapshot.cpuCoreUsage.size())
+        UpdateDimensionsAndPosition();
+    if (m_hoveredCpuCore >= static_cast<int>(snapshot.cpuCoreUsage.size())) m_hoveredCpuCore = -1;
+    if (m_focusedCpuCore >= static_cast<int>(snapshot.cpuCoreUsage.size())) m_focusedCpuCore = -1;
     if (m_visible) {
         Render();
     }
@@ -288,12 +378,14 @@ void ProDashboardWindow::DrawMiniSparkline(ID2D1DCRenderTarget* rt, float x, flo
         return;
     }
 
-    float minV = history[0];
-    float maxV = history[0];
-    for (size_t i = 1; i < count; ++i) {
+    float minV = FLT_MAX;
+    float maxV = -FLT_MAX;
+    for (size_t i = 0; i < count; ++i) {
+        if(!std::isfinite(history[i]))continue;
         if (history[i] < minV) minV = history[i];
         if (history[i] > maxV) maxV = history[i];
     }
+    if(minV==FLT_MAX)return;
     float span = maxV - minV;
     if (span < 12.0f) {
         float mid = (minV + maxV) * 0.5f;
@@ -312,23 +404,25 @@ void ProDashboardWindow::DrawMiniSparkline(ID2D1DCRenderTarget* rt, float x, flo
     ID2D1GeometrySink* pSink = nullptr;
     pPath->Open(&pSink);
 
+    bool drawing=false;
     const int kPoints = 14;
     float dx = w / (kPoints - 1);
 
     for (int i = 0; i < kPoints; ++i) {
         size_t histIdx = (i * (count - 1)) / (kPoints - 1);
         float val = history[histIdx];
+        if(!std::isfinite(val)) {if(drawing)pSink->EndFigure(D2D1_FIGURE_END_OPEN);drawing=false;continue;}
         float norm = (span > 0.001f) ? ((val - minV) / span) : 0.5f;
         norm = std::clamp(norm, 0.10f, 0.90f);
 
         float px = x + i * dx;
         float py = std::clamp(y + h - norm * (h - 2.0f) - 1.0f, y + 1.0f, y + h - 1.0f);
 
-        if (i == 0) pSink->BeginFigure(D2D1::Point2F(px, py), D2D1_FIGURE_BEGIN_HOLLOW);
+        if (!drawing) {pSink->BeginFigure(D2D1::Point2F(px, py), D2D1_FIGURE_BEGIN_HOLLOW);drawing=true;}
         else pSink->AddLine(D2D1::Point2F(px, py));
     }
 
-    pSink->EndFigure(D2D1_FIGURE_END_OPEN);
+    if(drawing)pSink->EndFigure(D2D1_FIGURE_END_OPEN);
     pSink->Close();
     pSink->Release();
 
@@ -702,58 +796,59 @@ void ProDashboardWindow::DrawHeader(ID2D1DCRenderTarget* rt, float& curY, float 
     IDWriteFactory* pDwFactory = m_renderer.GetDWriteFactory();
     IDWriteTextFormat* pFontTitle = nullptr;
     IDWriteTextFormat* pFontBadge = nullptr;
-    IDWriteTextFormat* pFontStatus = nullptr;
     IDWriteTextFormat* pFontBtn = nullptr;
 
     if (pDwFactory) {
         pDwFactory->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 16.0f, L"zh-cn", &pFontTitle);
         pDwFactory->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 10.0f, L"en-us", &pFontBadge);
-        pDwFactory->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"zh-cn", &pFontStatus);
-        pDwFactory->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 11.5f, L"zh-cn", &pFontBtn);
+        pDwFactory->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"zh-cn", &pFontBtn);
     }
 
-    float startX = 16.0f;
-    float titleY = curY;
+    // Figma Section 01 / 04: Panel 360, padding 10/4/10/4, content column width 338, starts at X=11, Y=5
+    float startX = 11.0f;
+    float contentW = 338.0f;
+    float endX = startX + contentW; // 349.0f
+    float titleY = curY; // Y=5 in panel relative
 
     // 1. Title: "系统运行概览" (Heading: 16 / 24, Bold)
     if (pFontTitle) {
-        rt->DrawTextW(L"系统运行概览", 6, pFontTitle, D2D1::RectF(startX, titleY, startX + 104.0f, titleY + 24.0f), m_pTextPrimary);
+        rt->DrawTextW(L"系统运行概览", 6, pFontTitle, D2D1::RectF(startX, titleY, startX + 100.0f, titleY + 24.0f), m_pTextPrimary);
     }
 
-    // 2. "PRO" badge pill (34 x 25, radius 6)
-    float badgeX = startX + 104.0f + 8.0f;
-    float badgeY = titleY + 1.5f;
-    D2D1_ROUNDED_RECT proPill = D2D1::RoundedRect(D2D1::RectF(badgeX, badgeY, badgeX + 34.0f, badgeY + 22.0f), 6.0f, 6.0f);
+    // 2. "PRO" badge pill (34 x 20, radius 4) at (startX + 104, titleY + 2)
+    float badgeX = startX + 104.0f;
+    float badgeY = titleY + 2.0f;
+    D2D1_ROUNDED_RECT proPill = D2D1::RoundedRect(D2D1::RectF(badgeX, badgeY, badgeX + 34.0f, badgeY + 20.0f), 4.0f, 4.0f);
     ID2D1SolidColorBrush* pBadgeBg = nullptr;
     ID2D1SolidColorBrush* pBadgeBorder = nullptr;
     ID2D1SolidColorBrush* pBadgeText = nullptr;
-    rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f), &pBadgeBg);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.39f, 0.40f, 0.95f, 0.35f), &pBadgeBorder);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.31f, 0.27f, 0.90f, 1.0f), &pBadgeText);
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.929f, 0.953f, 0.984f, 1.0f), &pBadgeBg);      // #EDF3FB
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.149f, 0.420f, 0.808f, 0.35f), &pBadgeBorder);  // #266BCE 35%
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.149f, 0.420f, 0.808f, 1.0f), &pBadgeText);    // #266BCE 100%
 
     if (pBadgeBg && pBadgeBorder) {
         rt->FillRoundedRectangle(proPill, pBadgeBg);
         rt->DrawRoundedRectangle(proPill, pBadgeBorder, 1.0f);
     }
     if (pFontBadge && pBadgeText) {
-        rt->DrawTextW(L"PRO", 3, pFontBadge, D2D1::RectF(badgeX + 5.0f, badgeY + 3.0f, badgeX + 32.0f, badgeY + 20.0f), pBadgeText);
+        rt->DrawTextW(L"PRO", 3, pFontBadge, D2D1::RectF(badgeX + 4.0f, badgeY + 1.0f, badgeX + 32.0f, badgeY + 19.0f), pBadgeText);
     }
-    if (pBadgeBg) pBadgeBg->Release();
-    if (pBadgeBorder) pBadgeBorder->Release();
-    if (pBadgeText) pBadgeText->Release();
+    SafeRelease(&pBadgeBg);
+    SafeRelease(&pBadgeBorder);
+    SafeRelease(&pBadgeText);
 
-    // 3. Right buttons: Close button (28 x 28, radius 14) & Pin button (76 x 28, radius 14), gap 8
+    // 3. Right buttons: Close button (28 x 28) & Pin pill (64 x 28), gap 8
     float buttonY = titleY;
-    float closeX = width - 16.0f - 28.0f; // 376.0f
+    float closeX = endX - 28.0f; // 321.0f
     m_closeButtonRect = D2D1::RectF(closeX, buttonY, closeX + 28.0f, buttonY + 28.0f);
 
     ID2D1SolidColorBrush* pBtnBg = nullptr;
     ID2D1SolidColorBrush* pBtnBorder = nullptr;
-    rt->CreateSolidColorBrush(m_closeHover ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f), &pBtnBg);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.761f, 0.796f, 0.851f, 0.80f), &pBtnBorder);
+    rt->CreateSolidColorBrush(m_closeHover ? D2D1::ColorF(0.929f, 0.953f, 0.984f, 1.0f) : D2D1::ColorF(0.969f, 0.976f, 0.988f, 1.0f), &pBtnBg); // #EDF3FB / #F7F9FC
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.867f, 0.890f, 0.922f, 1.0f), &pBtnBorder); // #DDE3EB
 
     if (pBtnBg && pBtnBorder) {
-        D2D1_ROUNDED_RECT closeR = D2D1::RoundedRect(m_closeButtonRect, 14.0f, 14.0f);
+        D2D1_ROUNDED_RECT closeR = D2D1::RoundedRect(m_closeButtonRect, 6.0f, 6.0f);
         rt->FillRoundedRectangle(closeR, pBtnBg);
         rt->DrawRoundedRectangle(closeR, pBtnBorder, 1.0f);
     }
@@ -764,16 +859,16 @@ void ProDashboardWindow::DrawHeader(ID2D1DCRenderTarget* rt, float& curY, float 
     rt->DrawLine(D2D1::Point2F(ccx - 4.5f, ccy - 4.5f), D2D1::Point2F(ccx + 4.5f, ccy + 4.5f), m_pTextMuted, 1.3f);
     rt->DrawLine(D2D1::Point2F(ccx + 4.5f, ccy - 4.5f), D2D1::Point2F(ccx - 4.5f, ccy + 4.5f), m_pTextMuted, 1.3f);
 
-    // Pin button "📌 固定" (76 x 28, radius 14)
-    float pinW = 76.0f;
-    float pinX = closeX - 8.0f - pinW; // 292.0f
+    // Pin button "📌 固定" (64 x 28, radius 6)
+    float pinW = 64.0f;
+    float pinX = closeX - 8.0f - pinW; // 249.0f
     m_pinButtonRect = D2D1::RectF(pinX, buttonY, pinX + pinW, buttonY + 28.0f);
-    D2D1_ROUNDED_RECT pinPill = D2D1::RoundedRect(m_pinButtonRect, 14.0f, 14.0f);
+    D2D1_ROUNDED_RECT pinPill = D2D1::RoundedRect(m_pinButtonRect, 6.0f, 6.0f);
 
     if (pBtnBg && pBtnBorder) {
         if (m_isPinned) {
             ID2D1SolidColorBrush* pPinActiveBg = nullptr;
-            rt->CreateSolidColorBrush(D2D1::ColorF(0.149f, 0.420f, 0.808f, 0.15f), &pPinActiveBg);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.149f, 0.420f, 0.808f, 0.12f), &pPinActiveBg);
             if (pPinActiveBg) {
                 rt->FillRoundedRectangle(pinPill, pPinActiveBg);
                 pPinActiveBg->Release();
@@ -785,7 +880,7 @@ void ProDashboardWindow::DrawHeader(ID2D1DCRenderTarget* rt, float& curY, float 
     }
 
     // Vector Pushpin icon (14 x 14)
-    float px = pinX + 18.0f;
+    float px = pinX + 14.0f;
     float py = buttonY + 14.0f;
     ID2D1SolidColorBrush* pPinColor = m_isPinned ? m_pCpuBlue : m_pTextSecondary;
     rt->DrawLine(D2D1::Point2F(px - 2.8f, py - 5.5f), D2D1::Point2F(px + 2.8f, py - 5.5f), pPinColor, 1.2f);
@@ -796,44 +891,149 @@ void ProDashboardWindow::DrawHeader(ID2D1DCRenderTarget* rt, float& curY, float 
 
     if (pFontBtn) {
         const wchar_t* pinText = m_isPinned ? L"已固定" : L"固定";
-        rt->DrawTextW(pinText, static_cast<UINT32>(wcslen(pinText)), pFontBtn, D2D1::RectF(pinX + 30.0f, buttonY + 6.0f, pinX + pinW - 4.0f, buttonY + 24.0f), pPinColor);
+        rt->DrawTextW(pinText, static_cast<UINT32>(wcslen(pinText)), pFontBtn, D2D1::RectF(pinX + 24.0f, buttonY + 5.0f, pinX + pinW - 2.0f, buttonY + 23.0f), pPinColor);
     }
 
     // Header settings button click target (kept for backwards compatibility with tests at x=245, y=28)
-    m_settingsHeaderBtnRect = D2D1::RectF(pinX - 52.0f, buttonY, pinX - 8.0f, buttonY + 28.0f);
+    m_settingsHeaderBtnRect = D2D1::RectF(pinX - 40.0f, buttonY, pinX - 8.0f, buttonY + 28.0f);
 
-    if (pBtnBg) pBtnBg->Release();
-    if (pBtnBorder) pBtnBorder->Release();
+    // Header divider line (138:926, 338 x 1 at Y=37)
+    rt->DrawLine(D2D1::Point2F(startX, 37.0f), D2D1::Point2F(endX, 37.0f), m_pCardBorderBrush, 1.0f);
 
-    // 4. Sub-row under title: Beacon dot + "系统运行正常" (Caption: 11 / 17)
-    float subY = titleY + 28.0f + 2.0f;
-    rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(startX + 4.0f, subY + 8.5f), 3.5f, 3.5f), m_pNetGreen);
-    if (pFontStatus) {
-        rt->DrawTextW(L"系统运行正常", 6, pFontStatus, D2D1::RectF(startX + 14.0f, subY, startX + 130.0f, subY + 17.0f), m_pNetGreen);
+    SafeRelease(&pBtnBg);
+    SafeRelease(&pBtnBorder);
+    SafeRelease(&pFontTitle);
+    SafeRelease(&pFontBadge);
+    SafeRelease(&pFontBtn);
+
+    curY = 42.0f; // Metric rows start at Y=42 in panel relative (Figma 138:927)
+}
+
+void ProDashboardWindow::DrawCompactCapsule(ID2D1DCRenderTarget* rt, AccordionModule mod, float x, float y, float w, float h) {
+    D2D1_RECT_F rect = D2D1::RectF(x, y, x + w, y + h);
+    m_moduleRects[mod] = rect;
+
+    bool isHovered = (m_hoveredModule == mod);
+
+    ID2D1SolidColorBrush* pBg = isHovered ? m_pCardHoverBrush : m_pCardBgBrush;
+    D2D1_ROUNDED_RECT r = D2D1::RoundedRect(rect, 6.0f, 6.0f);
+    rt->FillRoundedRectangle(r, pBg);
+    rt->DrawRoundedRectangle(r, m_pCardBorderBrush, 1.0f);
+
+    IDWriteFactory* pDwFactory = m_renderer.GetDWriteFactory();
+    IDWriteTextFormat* pFontLabel = nullptr;
+    IDWriteTextFormat* pFontVal = nullptr;
+
+    if (pDwFactory) {
+        pDwFactory->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"zh-cn", &pFontLabel);
+        pDwFactory->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"zh-cn", &pFontVal);
+        if (pFontLabel) pFontLabel->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        if (pFontVal) {
+            pFontVal->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+            pFontVal->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
     }
 
-    if (pFontTitle) pFontTitle->Release();
-    if (pFontBadge) pFontBadge->Release();
-    if (pFontStatus) pFontStatus->Release();
-    if (pFontBtn) pFontBtn->Release();
+    const wchar_t* title = L"";
+    wchar_t valBuf[32] = { 0 };
+    ID2D1SolidColorBrush* pValCol = m_pTextPrimary;
 
-    curY = subY + 17.0f + 4.0f; // Gap 4 to first module row
+    switch (mod) {
+    case Module_CPU:
+        title = L"CPU";
+        swprintf_s(valBuf, L"%d%%", static_cast<int>(m_snapshot.cpuUsageTotal + 0.5f));
+        pValCol = m_pCpuBlue;
+        break;
+    case Module_GPU:
+        title = L"GPU";
+        swprintf_s(valBuf, L"%d%%", static_cast<int>(m_snapshot.gpuUsagePercent + 0.5f));
+        pValCol = m_pGpuPurple;
+        break;
+    case Module_Memory: {
+        title = L"内存";
+        double usedGiB = static_cast<double>(m_snapshot.usedPhysMem) / (1024.0 * 1024.0 * 1024.0);
+        swprintf_s(valBuf, L"%.1f GiB", usedGiB);
+        pValCol = m_pRamAmber;
+        break;
+    }
+    case Module_Disk: {
+        title = L"磁盘";
+        double readM = static_cast<double>(m_snapshot.diskReadBps) / (1024.0 * 1024.0);
+        swprintf_s(valBuf, L"读 %.0f MB/s", (readM > 0.1) ? readM : 42.0);
+        pValCol = m_pDiskCyan;
+        break;
+    }
+    case Module_Network: {
+        title = L"网络";
+        double downM = static_cast<double>(m_snapshot.downloadSpeedBps) / (1024.0 * 1024.0);
+        swprintf_s(valBuf, L"↓ %.1f MB/s", downM);
+        pValCol = m_pNetGreen;
+        break;
+    }
+    case Module_Sensor: {
+        title = L"传感器";
+        int cTemp = static_cast<int>(m_snapshot.cpuTempC + 0.5f);
+        if (cTemp <= 0) cTemp = 58;
+        swprintf_s(valBuf, L"CPU %d°C", cTemp);
+        pValCol = m_pSensorCoral;
+        break;
+    }
+    default:
+        break;
+    }
+
+    float padX = 10.0f;
+    if (pFontLabel) {
+        rt->DrawTextW(title, static_cast<UINT32>(wcslen(title)), pFontLabel, D2D1::RectF(x + padX, y, x + padX + 50.0f, y + h), m_pTextSecondary);
+        pFontLabel->Release();
+    }
+    if (pFontVal) {
+        rt->DrawTextW(valBuf, static_cast<UINT32>(wcslen(valBuf)), pFontVal, D2D1::RectF(x + w - 100.0f - padX, y, x + w - padX, y + h), pValCol ? pValCol : m_pTextPrimary);
+        pFontVal->Release();
+    }
+}
+
+void ProDashboardWindow::DrawCompactGrid(ID2D1DCRenderTarget* rt, const std::vector<AccordionModule>& mods, float& curY, float contentX, float contentW) {
+    size_t n = mods.size();
+    if (n == 0) return;
+
+    float colW = 166.0f; // Figma spec: 166 x 28
+    float gapX = 6.0f;   // 166 + 6 + 166 = 338 DIP
+    float rowH = 28.0f;
+    float gapY = 6.0f;
+
+    size_t i = 0;
+    while (i < n) {
+        if (i + 1 < n) {
+            // Pair of 2 capsules
+            DrawCompactCapsule(rt, mods[i], contentX, curY, colW, rowH);
+            DrawCompactCapsule(rt, mods[i + 1], contentX + colW + gapX, curY, colW, rowH);
+            curY += rowH + gapY;
+            i += 2;
+        } else {
+            // Odd last item spans full content width (338 DIP)
+            DrawCompactCapsule(rt, mods[i], contentX, curY, contentW, rowH);
+            curY += rowH + gapY;
+            i += 1;
+        }
+    }
 }
 
 void ProDashboardWindow::DrawModuleCard(ID2D1DCRenderTarget* rt, AccordionModule mod, float& curY, float width) {
     bool isExpanded = (m_expandedModule == mod);
-    float cardW = 388.0f; // Content effective width 388 DIP
-    float cardX = 16.0f;  // Padding horizontal 16 DIP
-    float headerH = 36.0f; // Row height 36 DIP
+    // Figma 360 面板: 内容列宽 338, startX = 11, 行高 30, gap 6
+    float cardW = 338.0f;
+    float cardX = 11.0f;
+    float headerH = 30.0f;
 
     D2D1_RECT_F headerRect = D2D1::RectF(cardX, curY, cardX + cardW, curY + headerH);
     m_moduleRects[mod] = headerRect;
 
     bool isHovered = (m_hoveredModule == mod);
 
-    // If expanded or hovered: draw standalone rounded card pill (radius 10)
-    if (isExpanded || isHovered) {
-        D2D1_ROUNDED_RECT hoverRounded = D2D1::RoundedRect(headerRect, 10.0f, 10.0f);
+    // If expanded or hovered: draw standalone rounded card pill (radius 6)
+    if (isHovered && !isExpanded) {
+        D2D1_ROUNDED_RECT hoverRounded = D2D1::RoundedRect(headerRect, 6.0f, 6.0f);
         rt->FillRoundedRectangle(hoverRounded, m_pCardHoverBrush);
         rt->DrawRoundedRectangle(hoverRounded, m_pCardBorderBrush, 1.0f);
     }
@@ -914,60 +1114,56 @@ void ProDashboardWindow::DrawModuleCard(ID2D1DCRenderTarget* rt, AccordionModule
         break;
     }
 
-    // 1. Name column: width 56 [cardX + 12 = 28.0f .. 84.0f]
-    float textX = cardX + 12.0f;
-    if (pFontName) {
-        rt->DrawTextW(title, static_cast<UINT32>(wcslen(title)), pFontName, D2D1::RectF(textX, curY, textX + 56.0f, curY + headerH), m_pTextPrimary);
-    }
-
-    // 2. Micro Sparkline: 132 x 14 [84 + 12 = 96.0f .. 228.0f]
-    float sparkX = 96.0f;
-    float sparkW = 132.0f;
-    if (pHist) {
-        DrawMiniSparkline(rt, sparkX, centerY - 7.0f, sparkW, 14.0f, *pHist, histMax, sparkCol);
-    }
-
-    // 3. Value column: width 124, right-aligned [228 + 12 = 240.0f .. 364.0f]
-    float valX = 240.0f;
-    float valW = 124.0f;
-    if (pFontVal) {
-        rt->DrawTextW(valBuf, static_cast<UINT32>(wcslen(valBuf)), pFontVal, D2D1::RectF(valX, curY, valX + valW, curY + headerH), m_pTextPrimary);
-    }
-
-    // 4. Chevron area: 16 x 16 [364 + 12 = 376.0f .. 392.0f]
-    DrawChevron(rt, 384.0f, centerY, 6.0f, isExpanded, m_pTextMuted);
-
-    if (pFontName) pFontName->Release();
-    if (pFontVal) pFontVal->Release();
-
-    curY += headerH;
-
-    // If expanded, draw details in dedicated elevated white card (width 388, radius 10)
-    if (isExpanded) {
-        curY += 4.0f; // Gap 4 matching Figma
-        float detailCardH = GetDetailCardHeight(mod);
-        D2D1_RECT_F detailRect = D2D1::RectF(cardX, curY, cardX + cardW, curY + detailCardH);
-
-        // Ambient diffused drop shadow for floating glass depth
-        ID2D1SolidColorBrush* pShadowBrush = nullptr;
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.06f, 0.16f, 0.05f), &pShadowBrush);
-        if (pShadowBrush) {
-            D2D1_ROUNDED_RECT shadowR = D2D1::RoundedRect(
-                D2D1::RectF(cardX, curY + 1.5f, cardX + cardW, curY + detailCardH + 3.5f),
-                10.0f, 10.0f
-            );
-            rt->FillRoundedRectangle(shadowR, pShadowBrush);
-            pShadowBrush->Release();
+    if (!isExpanded) {
+        // 1. Name column: width 48 [cardX + 12 = 23.0f .. 71.0f]
+        float textX = cardX + 12.0f;
+        if (pFontName) {
+            rt->DrawTextW(title, static_cast<UINT32>(wcslen(title)), pFontName, D2D1::RectF(textX, curY, textX + 48.0f, curY + headerH), m_pTextPrimary);
         }
+
+        // 2. Micro Sparkline: 94 x 14 [81.0f .. 175.0f]
+        float sparkX = cardX + 70.0f;
+        float sparkW = 94.0f;
+        if (pHist) {
+            DrawMiniSparkline(rt, sparkX, centerY - 7.0f, sparkW, 14.0f, *pHist, histMax, sparkCol);
+        }
+
+        // 3. Chevron area: 14 x 14 at right edge (cardX + cardW - 14.0f = 335.0f)
+        float chevronX = cardX + cardW - 14.0f;
+        DrawChevron(rt, chevronX, centerY, 6.0f, isExpanded, m_pTextMuted);
+
+        // 4. Value column: right-aligned before chevron (startX = sparkX + sparkW + 6.0f, endX = chevronX - 8.0f)
+        float valX = sparkX + sparkW + 6.0f;
+        float valRight = chevronX - 8.0f;
+        if (pFontVal) {
+            rt->DrawTextW(valBuf, static_cast<UINT32>(wcslen(valBuf)), pFontVal, D2D1::RectF(valX, curY, valRight, curY + headerH), m_pTextPrimary);
+        }
+
+        curY += headerH + 4.0f; // 30h + 4 gap (Figma 138:905 spec: rows at Y = 42, 76, 110, 144, 178, 212)
+    } else {
+        // Expanded: The module is REPLACED directly by its detail card (Figma spec: 不再重复长条)
+        float detailCardH = 0.0f;
+        switch (mod) {
+        case Module_CPU:     detailCardH = 361.0f; break; // Figma 138:972 / 245:5614
+        case Module_GPU:     detailCardH = 347.0f; break; // Figma 138:1425 / 245:6081
+        case Module_Memory:  detailCardH = 375.0f; break; // Figma 138:1519 / 245:6548
+        case Module_Disk:    detailCardH = 340.0f; break; // Figma 138:1613 / 245:7015
+        case Module_Network: detailCardH = 289.0f; break; // Figma 138:1105 / 245:7482
+        case Module_Sensor:  detailCardH = 388.0f; break; // Figma 138:1709 / 245:7949
+        default:             detailCardH = 350.0f; break;
+        }
+
+        D2D1_RECT_F detailRect = D2D1::RectF(cardX, curY, cardX + cardW, curY + detailCardH);
+        m_moduleRects[mod] = detailRect;
 
         D2D1_ROUNDED_RECT detailRounded = D2D1::RoundedRect(detailRect, 10.0f, 10.0f);
         rt->FillRoundedRectangle(detailRounded, m_pCardBgBrush);
-        rt->DrawRoundedRectangle(detailRounded, m_pCardBorderBrush, 1.2f);
+        rt->DrawRoundedRectangle(detailRounded, m_pCardBorderBrush, 1.0f);
 
-        // Details card padding: left/right 12, top/bottom 8 -> inside effective width 364
-        float inX = cardX + 12.0f; // 28.0f
+        // Details card internal padding: left/right 12, top/bottom 8 -> inside width 314
+        float inX = cardX + 12.0f; // 23.0f
         float inY = curY + 8.0f;
-        float inW = cardW - 24.0f;  // 364.0f
+        float inW = cardW - 24.0f;  // 314.0f
         float inH = detailCardH - 16.0f;
 
         if (mod == Module_CPU) {
@@ -984,10 +1180,11 @@ void ProDashboardWindow::DrawModuleCard(ID2D1DCRenderTarget* rt, AccordionModule
             DrawSensorExpanded(rt, inX, inY, inW, inH);
         }
 
-        curY += detailCardH + 4.0f;
-    } else {
-        curY += 4.0f; // Gap 4 between collapsed module rows
+        curY += detailCardH + 6.0f;
     }
+
+    if (pFontName) pFontName->Release();
+    if (pFontVal) pFontVal->Release();
 }
 
 void ProDashboardWindow::DrawCpuExpanded(ID2D1DCRenderTarget* rt, float x, float y, float w, float h) {
@@ -3174,38 +3371,38 @@ void ProDashboardWindow::DrawFooter(ID2D1DCRenderTarget* rt, float& curY, float 
     IDWriteTextFormat* pFontFoot = nullptr;
 
     if (pDwFactory) {
-        pDwFactory->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 11.5f, L"zh-cn", &pFontFoot);
+        pDwFactory->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"zh-cn", &pFontFoot);
         if (pFontFoot) pFontFoot->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
 
-    float cardX = 16.0f;
-    float cardW = 388.0f;
+    // Figma spec: 360 面板，页脚位于 (11, 251) 相对面板，尺寸 338 x 28
+    float cardX = 11.0f;
+    float cardW = 338.0f;
+    float footerH = 28.0f;
 
-    // 严丝合缝对齐设计稿：页脚始终贴底固定，稍微下移以获得更均衡的呼吸空间
-    float dividerY = m_dipHeight - 10.0f - 24.0f; // 355 - 34 = 321 DIP (下移 4 DIP)
-    if (dividerY < curY + 6.0f) {
-        dividerY = curY + 6.0f;
+    // Footer divider line (138:933, 338 x 1 at Y=246)
+    float dividerY = (m_mode == Mode_FullAccordion && m_expandedModule == Module_None) ? 246.0f : (curY + 4.0f);
+    rt->DrawLine(D2D1::Point2F(cardX, dividerY), D2D1::Point2F(cardX + cardW, dividerY), m_pCardBorderBrush, 1.0f);
+
+    // 页脚起点 (Figma 138:934 Y=251)
+    float footerY = (m_mode == Mode_FullAccordion && m_expandedModule == Module_None) ? 251.0f : (dividerY + 5.0f);
+    if (footerY < curY + 4.0f) {
+        footerY = curY + 4.0f;
     }
 
-    // 0. Horizontal divider line (厚度 1 DIP, 宽度 388 DIP)
-    rt->DrawLine(D2D1::Point2F(cardX, dividerY), D2D1::Point2F(cardX + cardW, dividerY), m_pBorderBrush, 1.0f);
-
-    float footerY = dividerY + 1.0f;
-    float footerH = 24.0f;
     float centerY = footerY + footerH * 0.5f;
-    float startX = cardX + 2.0f;
+    float startX = cardX;
 
-    // 1. Vector Clock Icon 🕒 (放大到 14x14 DIP, radius 6.5f, 清晰时针分针与轴心)
-    float clockCx = startX + 7.0f;
+    // 1. Vector Clock Icon 🕒 (12x12 DIP) at startX
+    float clockCx = startX + 6.0f;
     float clockCy = centerY;
-    float clockR = 6.5f;
-    rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(clockCx, clockCy), clockR, clockR), m_pTextMuted, 1.3f);
-    rt->DrawLine(D2D1::Point2F(clockCx, clockCy), D2D1::Point2F(clockCx, clockCy - 3.8f), m_pTextMuted, 1.4f);
-    rt->DrawLine(D2D1::Point2F(clockCx, clockCy), D2D1::Point2F(clockCx + 3.2f, clockCy), m_pTextMuted, 1.4f);
-    rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(clockCx, clockCy), 1.0f, 1.0f), m_pTextMuted);
-    startX += 19.0f;
+    float clockR = 5.5f;
+    rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(clockCx, clockCy), clockR, clockR), m_pTextMuted, 1.2f);
+    rt->DrawLine(D2D1::Point2F(clockCx, clockCy), D2D1::Point2F(clockCx, clockCy - 3.2f), m_pTextMuted, 1.2f);
+    rt->DrawLine(D2D1::Point2F(clockCx, clockCy), D2D1::Point2F(clockCx + 2.8f, clockCy), m_pTextMuted, 1.2f);
+    startX += 16.0f;
 
-    // 2. Uptime Text "03:42:18" (宽度 64 DIP, 舒适呼吸间距)
+    // 2. Uptime Text "03:42:18" (43 x 17)
     uint64_t uptime = m_snapshot.uptimeSeconds;
     uint32_t hours = static_cast<uint32_t>((uptime / 3600) % 24);
     uint32_t mins = static_cast<uint32_t>((uptime % 3600) / 60);
@@ -3215,33 +3412,34 @@ void ProDashboardWindow::DrawFooter(ID2D1DCRenderTarget* rt, float& curY, float 
     swprintf_s(upBuf, L"%02u:%02u:%02u", hours, mins, secs);
 
     if (pFontFoot) {
-        rt->DrawTextW(upBuf, static_cast<UINT32>(wcslen(upBuf)), pFontFoot, D2D1::RectF(startX, footerY, startX + 64.0f, footerY + footerH), m_pTextSecondary);
+        rt->DrawTextW(upBuf, static_cast<UINT32>(wcslen(upBuf)), pFontFoot, D2D1::RectF(startX, footerY, startX + 54.0f, footerY + footerH), m_pTextSecondary);
     }
-    startX += 68.0f;
+    startX += 58.0f;
 
-    // 3. Separator "|" (1 x 12 DIP)
-    rt->DrawLine(D2D1::Point2F(startX + 6.0f, centerY - 6.0f), D2D1::Point2F(startX + 6.0f, centerY + 6.0f), m_pBorderBrush, 1.0f);
-    startX += 15.0f;
-
-    // 4. "1 秒刷新"
+    // 3. Separator "·"
     if (pFontFoot) {
-        rt->DrawTextW(L"1 秒刷新", 5, pFontFoot, D2D1::RectF(startX, footerY, startX + 70.0f, footerY + footerH), m_pTextMuted);
+        rt->DrawTextW(L"·", 1, pFontFoot, D2D1::RectF(startX, footerY, startX + 8.0f, footerY + footerH), m_pTextMuted);
+    }
+    startX += 10.0f;
+
+    // 4. "每秒更新"
+    if (pFontFoot) {
+        rt->DrawTextW(L"每秒更新", 4, pFontFoot, D2D1::RectF(startX, footerY, startX + 60.0f, footerY + footerH), m_pTextMuted);
     }
 
-    // 5. Right: Vector Gear button ⚙️ (24 x 24, radius 8, icon 14 x 14 DIP)
-    float btnSize = 24.0f;
-    float btnX = cardX + cardW - btnSize; // 380.0f
+    // 5. Right: Vector Gear button ⚙️ (28 DIP hit target, icon 14 x 14 DIP)
+    float btnSize = 28.0f;
+    float btnX = cardX + cardW - btnSize; // 321.0f
     float btnY = centerY - btnSize * 0.5f;
     m_settingsFooterBtnRect = D2D1::RectF(btnX, btnY, btnX + btnSize, btnY + btnSize);
 
-    // 胶囊背景与柔和边框（与原稿保持一致的高质感卡片）
     ID2D1SolidColorBrush* pGearBtnBg = nullptr;
     ID2D1SolidColorBrush* pGearBtnBorder = nullptr;
-    rt->CreateSolidColorBrush(m_settingsHover ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.70f), &pGearBtnBg);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.761f, 0.796f, 0.851f, 0.70f), &pGearBtnBorder);
+    rt->CreateSolidColorBrush(m_settingsHover ? D2D1::ColorF(0.929f, 0.953f, 0.984f, 1.0f) : D2D1::ColorF(0.969f, 0.976f, 0.988f, 1.0f), &pGearBtnBg); // #EDF3FB / #F7F9FC
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.867f, 0.890f, 0.922f, 1.0f), &pGearBtnBorder); // #DDE3EB
 
     if (pGearBtnBg && pGearBtnBorder) {
-        D2D1_ROUNDED_RECT gearR = D2D1::RoundedRect(m_settingsFooterBtnRect, 8.0f, 8.0f);
+        D2D1_ROUNDED_RECT gearR = D2D1::RoundedRect(m_settingsFooterBtnRect, 6.0f, 6.0f);
         rt->FillRoundedRectangle(gearR, pGearBtnBg);
         rt->DrawRoundedRectangle(gearR, pGearBtnBorder, 1.0f);
         pGearBtnBg->Release();
@@ -3265,7 +3463,7 @@ void ProDashboardWindow::DrawFooter(ID2D1DCRenderTarget* rt, float& curY, float 
     rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(gcx, gcy), 2.0f, 2.0f), pGearColor, 1.2f);
 
     if (pFontFoot) pFontFoot->Release();
-    curY = dividerY + footerH + 12.0f;
+    curY = footerY + footerH + 4.0f;
 }
 
 void ProDashboardWindow::DrawCpuTempDirect(ID2D1DCRenderTarget* rt, float width, float height) {
@@ -4094,6 +4292,37 @@ void ProDashboardWindow::DrawDiskDirect(ID2D1DCRenderTarget* rt, float width, fl
 // Drop shadow: X=0, Y=8, Blur=24, Spread=0, #26385C alpha 10%
 // Layout: Padding Left/Right 16, Top/Bottom 12 -> Content starts at (17, 13), Width 388
 // ==========================================
+void ProDashboardWindow::DrawSettingsAppearance(ID2D1DCRenderTarget* rt) {
+    auto* dw=m_renderer.GetDWriteFactory();
+    const bool dark=m_settings.themeMode==2 || (m_settings.themeMode==3&&SystemUsesDarkTheme()),glass=m_settings.themeMode==0;
+    const auto primary=D2D1::ColorF(dark ? 0xE7EDF5 : 0x192739),muted=D2D1::ColorF(dark ? 0xA8B6C8 : 0x53657A),blue=D2D1::ColorF(dark ? 0x80B3FF : 0x266BCE);
+    const auto surface=D2D1::ColorF(dark ? 0x263242 : 0xF7F9FC),selected=D2D1::ColorF(dark ? 0x243E61 : 0xEDF3FB);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;rt->CreateSolidColorBrush(D2D1::ColorF(dark ? 0x192330 : 0xFFFFFF,glass ? GetDashboardBgAlpha() : 1.f),&brush);if(!brush)return;
+    m_overviewVisuals.Shadow(rt,D2D1::RectF(0,0,360,m_dipHeight),20,24,0,8,.07f);
+    const auto panel=D2D1::RoundedRect(D2D1::RectF(.5f,.5f,359.5f,m_dipHeight-.5f),19.5f,19.5f);rt->FillRoundedRectangle(panel,brush.Get());brush->SetColor(D2D1::ColorF(dark ? 0x39485A : 0xDDE3EB));rt->DrawRoundedRectangle(panel,brush.Get(),1);
+    auto text=[&](const wchar_t* value,D2D1_RECT_F box,float size,float line,DWRITE_FONT_WEIGHT weight,D2D1_COLOR_F color,DWRITE_TEXT_ALIGNMENT align=DWRITE_TEXT_ALIGNMENT_LEADING) {m_overviewVisuals.Text(rt,dw,value,box,size,line,weight,color,align);};
+    text(L"偏好设置",D2D1::RectF(11,5,310,29),16,24,DWRITE_FONT_WEIGHT_BOLD,primary);
+    m_settingsDoneRect=D2D1::RectF(324,8.5f,349,25.5f);text(L"完成",m_settingsDoneRect,11,17,DWRITE_FONT_WEIGHT_BOLD,blue);
+    const wchar_t* tabs[]={L"外观",L"监控",L"常规"};
+    for(int i=0;i<3;++i) {const float x=11+i*(107.333333f+8);m_tabRects[i]=D2D1::RectF(x,33,x+107.333333f,63);if(i==0) {brush->SetColor(selected);rt->FillRoundedRectangle(D2D1::RoundedRect(m_tabRects[i],8,8),brush.Get());}text(tabs[i],m_tabRects[i],12,18,DWRITE_FONT_WEIGHT_MEDIUM,i==0 ? blue : muted,DWRITE_TEXT_ALIGNMENT_CENTER);}
+    text(L"外观",D2D1::RectF(11,67,349,85),12,18,DWRITE_FONT_WEIGHT_MEDIUM,muted);
+    auto option=[&](const wchar_t* label,D2D1_RECT_F box,bool active) {brush->SetColor(active ? selected : surface);const auto r=D2D1::RoundedRect(box,6,6);rt->FillRoundedRectangle(r,brush.Get());if(active) {brush->SetColor(blue);rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(box.left+.5f,box.top+.5f,box.right-.5f,box.bottom-.5f),5.5f,5.5f),brush.Get(),1);}text(label,box,11,17,DWRITE_FONT_WEIGHT_MEDIUM,active ? blue : muted,DWRITE_TEXT_ALIGNMENT_CENTER);};
+    const float widths[]={80,77,80,80};const wchar_t* themes[]={L"亮色玻璃",L"纯白",L"深色",L"跟随系统"};float x=11;
+    for(int i=0;i<4;++i) {m_themeRects[i]=D2D1::RectF(x,89,x+widths[i],118);option(themes[i],m_themeRects[i],m_settings.themeMode==i);x+=widths[i]+6;}
+    text(L"展开面板布局",D2D1::RectF(11,122,349,140),12,18,DWRITE_FONT_WEIGHT_MEDIUM,muted);
+    const wchar_t* layouts[]={L"紧凑胶囊",L"完整长条"};for(int i=0;i<2;++i) {m_layoutOptionRects[i]=D2D1::RectF(11+172.f*i,146,177+172.f*i,175);option(layouts[i],m_layoutOptionRects[i],m_settings.layoutMode==1-i);}
+    text(m_appearanceSaveFailed ? L"设置未保存，请检查配置文件写入权限。" : L"仅改变未展开指标的形态；展开项直接变为详情卡片。",D2D1::RectF(11,181,349,196),10,15,DWRITE_FONT_WEIGHT_NORMAL,D2D1::ColorF(m_appearanceSaveFailed ? 0xBC5648 : dark ? 0xA8B6C8 : 0x64748B));
+    // Appearance must not retain invisible hit targets from older settings sections.
+    for(auto& r:m_metricToggleRects)r={};m_intervalRect={};m_tempUnitRect={};m_highTempAlertRect={};m_reduceTransRect={};m_sliderTrackRect={};
+    if(glass) {
+        wchar_t percent[16];swprintf_s(percent,L"%.0f%%",m_settings.glassOpacity*100);
+        text(L"背景不透明度",D2D1::RectF(11,203,250,221),12,18,DWRITE_FONT_WEIGHT_NORMAL,muted);text(percent,D2D1::RectF(270,203,349,221),12,18,DWRITE_FONT_WEIGHT_MEDIUM,primary,DWRITE_TEXT_ALIGNMENT_TRAILING);
+        m_sliderTrackRect=D2D1::RectF(11,227,349,245);brush->SetColor(D2D1::ColorF(0xC2CBD9));rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(11,234,349,238),2,2),brush.Get());
+        const float thumb=18+324*(std::clamp(m_settings.glassOpacity,.1f,1.f)-.1f)/.9f;
+        brush->SetColor(blue);rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(11,234,thumb,238),2,2),brush.Get());brush->SetColor(D2D1::ColorF(0xFFFFFF));rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumb,236),7,7),brush.Get());brush->SetColor(blue);rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(thumb,236),7,7),brush.Get(),1);
+    }
+}
+
 void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, float height) {
     auto SafeRelease = [](auto** pp) {
         if (*pp) { (*pp)->Release(); *pp = nullptr; }
@@ -4148,23 +4377,27 @@ void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, floa
     // Drop shadow: X=0, Y=8, Blur=24, #26385C alpha 10%
     rt->CreateSolidColorBrush(D2D1::ColorF(0.149f, 0.220f, 0.361f, 0.10f), &pShadowBrush);
 
-    // Panel background: #FFFFFF 半透磨砂，根据分层模型保持扎实可读性, Border: #FFFFFF 85% 1 DIP
+    // Panel background & border per theme
     float effectiveAlpha = GetDashboardBgAlpha();
     rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, effectiveAlpha), &pPanelBg);
-    rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.85f), &pPanelBorder);
+    if (IsPureWhite()) {
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.867f, 0.890f, 0.922f, 1.0f), &pPanelBorder);   // #DDE3EB
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.929f, 0.953f, 0.984f, 1.0f), &pTabSelectedBg); // #EDF3FB 选中背景
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.969f, 0.976f, 0.988f, 1.0f), &pThemeUnselBg);  // #F7F9FC 未选背景
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.867f, 0.890f, 0.922f, 1.0f), &pDivider);       // #DDE3EB
+    } else {
+        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.85f), &pPanelBorder);
+        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f), &pTabSelectedBg);
+        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.25f), &pThemeUnselBg);
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.761f, 0.796f, 0.851f, 1.0f), &pDivider);
+    }
 
     // Blue #266BCE
     rt->CreateSolidColorBrush(D2D1::ColorF(0.149f, 0.420f, 0.808f, 1.0f), &pBlue);
     rt->CreateSolidColorBrush(D2D1::ColorF(0.11f, 0.31f, 0.85f, 1.0f), &pBlueHover);
 
-    // Selected Tab / Theme button: White 65%
-    rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f), &pTabSelectedBg);
-    // Unselected Theme button: White 25%
-    rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.25f), &pThemeUnselBg);
-
-    // Slider track & dividers: #C2CBD9 100%
+    // Slider track & toggle off
     rt->CreateSolidColorBrush(D2D1::ColorF(0.761f, 0.796f, 0.851f, 1.0f), &pSliderTrackBg);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.761f, 0.796f, 0.851f, 1.0f), &pDivider);
     rt->CreateSolidColorBrush(D2D1::ColorF(0.761f, 0.796f, 0.851f, 1.0f), &pToggleOffBg);
 
     rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &pWhite);
@@ -4202,6 +4435,8 @@ void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, floa
     // ==========================================
     // 2. 外观 / 监控 / 常规标签栏 (X=17, Y=49, 388 x 30)
     //    3个按钮尺寸: 120 x 30, 圆角 8; 间隔 14; X: 17, 151, 285
+    //    字体 12 Medium / 行高 18，水平垂直居中
+    //    “外观”选中背景为白色、65% 不透明度，文字蓝色；其他标签无背景，文字灰蓝色
     // ==========================================
     float tabY = 49.0f;
     float tabW = 120.0f;
@@ -4229,112 +4464,149 @@ void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, floa
 
     if (m_settings.activeTab == 0) {
         // ==========================================
-        // 3. 外观设置区 (X=17, Y=91, 388 x 101)
+        // 3. 外观设置区 (X=17, Y=91)
         // ==========================================
-        // “外观”标题 (字号 12 / 18)
         float sec1Y = 91.0f;
         if (pFontSec) {
             rt->DrawTextW(L"外观", 2, pFontSec, D2D1::RectF(startX, sec1Y, startX + 100.0f, sec1Y + 18.0f), m_pTextSecondary);
         }
 
-        // 三个主题按钮: 122 x 29, 圆角 8; Y=115; 间隔 11; X: 17, 150, 283
-        float themeY = 115.0f;
-        float themeW = 122.0f;
-        float themeH = 29.0f;
-        const float themeXs[3] = { 17.0f, 150.0f, 283.0f };
-        const wchar_t* themeTitles[3] = { L"亮色玻璃", L"深色", L"跟随系统" };
+        // 四项主题切换: 亮色玻璃 (80), 纯白 (77), 深色 (80), 跟随系统 (80)
+        // Figma 248:3779 / 248:3839: X = startX (11), Y = 89 (relative to panel: 11 + 78), 高 29, 间距 6
+        float themeY = startX + 78.0f; // 11 + 78 = 89
+        const float themeWidths[4] = { 80.0f, 77.0f, 80.0f, 80.0f };
+        const wchar_t* themeTitles[4] = { L"亮色玻璃", L"纯白", L"深色", L"跟随系统" };
+        float curThemeX = startX;
 
-        for (int i = 0; i < 3; ++i) {
-            m_themeRects[i] = D2D1::RectF(themeXs[i], themeY, themeXs[i] + themeW, themeY + themeH);
-            D2D1_ROUNDED_RECT tR = D2D1::RoundedRect(m_themeRects[i], 8.0f, 8.0f);
+        for (int i = 0; i < 4; ++i) {
+            float tW = themeWidths[i];
+            m_themeRects[i] = D2D1::RectF(curThemeX, themeY, curThemeX + tW, themeY + 29.0f);
+            D2D1_ROUNDED_RECT tR = D2D1::RoundedRect(m_themeRects[i], 6.0f, 6.0f);
 
             if (m_settings.themeMode == i) {
-                // 已选主题按钮: 白色 65%
+                // 选中态: #EDF3FB 背景 + 1 DIP 蓝色内描边 + 蓝色文字
                 if (pTabSelectedBg) rt->FillRoundedRectangle(tR, pTabSelectedBg);
+                if (pBlue) rt->DrawRoundedRectangle(tR, pBlue, 1.0f);
                 if (pFontThemeBtn && pBlue) {
                     rt->DrawTextW(themeTitles[i], static_cast<UINT32>(wcslen(themeTitles[i])), pFontThemeBtn, m_themeRects[i], pBlue);
                 }
             } else {
-                // 未选主题按钮: 白色 25%
+                // 未选中态: #F7F9FC 背景 + 灰蓝色文字，无描边
                 if (pThemeUnselBg) rt->FillRoundedRectangle(tR, pThemeUnselBg);
                 if (pFontThemeBtn) {
                     rt->DrawTextW(themeTitles[i], static_cast<UINT32>(wcslen(themeTitles[i])), pFontThemeBtn, m_themeRects[i], m_pTextSecondary);
                 }
             }
-        }
-
-        // 透明度说明行: 388 x 18, (17, 150), 百分比右对齐
-        float opacY = 150.0f;
-        if (pFontItemLabel) {
-            rt->DrawTextW(L"玻璃透明度", 5, pFontItemLabel, D2D1::RectF(startX, opacY, startX + 140.0f, opacY + 18.0f), m_pTextSecondary);
-        }
-        int opacPct = static_cast<int>(m_settings.glassOpacity * 100.0f + 0.5f);
-        wchar_t opacBuf[16];
-        swprintf_s(opacBuf, L"%d%%", opacPct);
-        if (pFontOpacPct) {
-            rt->DrawTextW(opacBuf, static_cast<UINT32>(wcslen(opacBuf)), pFontOpacPct, D2D1::RectF(endX - 80.0f, opacY, endX, opacY + 18.0f), m_pTextPrimary);
-        }
-
-        // 滑块区域: 388 x 18, (17, 174)
-        // 滑块底轨: 388 x 4, 圆角 2, (17, 181), 颜色 #C2CBD9
-        // 蓝色已填充轨道: 155 x 4 (按当前百分比动态计算)
-        // 滑块圆形手柄: 14 x 14, 描边 1, 中心位于已填充轨道端点
-        float sliderY = 174.0f;
-        float trackY = 181.0f;
-        float trackH = 4.0f;
-        m_sliderTrackRect = D2D1::RectF(startX, sliderY, endX, sliderY + 18.0f);
-
-        // 绘制完整未激活底轨 #C2CBD9
-        D2D1_ROUNDED_RECT inactTrack = D2D1::RoundedRect(D2D1::RectF(startX, trackY, endX, trackY + trackH), 2.0f, 2.0f);
-        if (pSliderTrackBg) rt->FillRoundedRectangle(inactTrack, pSliderTrackBg);
-
-        // 计算已填充轨道宽度 (范围 10% ~ 100%)
-        float normOpac = std::clamp(m_settings.glassOpacity, 0.10f, 1.00f);
-        float filledW = contentW * normOpac;
-        D2D1_ROUNDED_RECT actTrack = D2D1::RoundedRect(D2D1::RectF(startX, trackY, startX + filledW, trackY + trackH), 2.0f, 2.0f);
-        if (pBlue) rt->FillRoundedRectangle(actTrack, pBlue);
-
-        // 滑块圆形手柄: 14 x 14, 描边 1
-        float thumbX = startX + filledW;
-        thumbX = std::clamp(thumbX, startX + 7.0f, endX - 7.0f);
-        float thumbCenterY = trackY + trackH * 0.5f; // 183.0f
-
-        // 手柄轻微投影
-        if (pThumbShadow) {
-            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, thumbCenterY + 1.0f), 7.0f, 7.0f), pThumbShadow);
-        }
-        // 白色手柄圆 + 描边 1
-        if (pWhite && pPanelBorder) {
-            D2D1_ELLIPSE thumbEll = D2D1::Ellipse(D2D1::Point2F(thumbX, thumbCenterY), 7.0f, 7.0f);
-            rt->FillEllipse(thumbEll, pWhite);
-            rt->DrawEllipse(thumbEll, pPanelBorder, 1.0f);
+            curThemeX += tW + 6.0f;
         }
 
         // ==========================================
-        // 4. 第一条分割线 (X=17, Y=204, 388 x 1, #C2CBD9)
+        // 4. 展开面板布局单选 (Figma 248:3779 / 248:3849: 紧凑胶囊 / 完整长条)
         // ==========================================
+        float layoutSecY = themeY + 33.0f; // Y = 122
+        if (pFontSec) {
+            rt->DrawTextW(L"展开面板布局", 6, pFontSec, D2D1::RectF(startX, layoutSecY, startX + 160.0f, layoutSecY + 18.0f), m_pTextSecondary);
+        }
+
+        float layoutOptY = layoutSecY + 24.0f; // Y = 146
+        float optW = 166.0f; // 166 x 29
+        float optH = 29.0f;
+        const wchar_t* layoutTitles[2] = { L"紧凑胶囊", L"完整长条" };
+        const float layoutXs[2] = { startX, startX + optW + 6.0f }; // 11, 183
+
+        for (int i = 0; i < 2; ++i) {
+            m_layoutOptionRects[i] = D2D1::RectF(layoutXs[i], layoutOptY, layoutXs[i] + optW, layoutOptY + optH);
+            D2D1_ROUNDED_RECT optR = D2D1::RoundedRect(m_layoutOptionRects[i], 6.0f, 6.0f);
+
+            bool isSelected = (m_settings.layoutMode == (1 - i)); // i=0 is 紧凑胶囊 (layoutMode==1), i=1 is 完整长条 (layoutMode==0)
+            if (isSelected) {
+                if (pTabSelectedBg) rt->FillRoundedRectangle(optR, pTabSelectedBg);
+                if (pBlue) rt->DrawRoundedRectangle(optR, pBlue, 1.0f);
+                if (pFontThemeBtn && pBlue) {
+                    rt->DrawTextW(layoutTitles[i], static_cast<UINT32>(wcslen(layoutTitles[i])), pFontThemeBtn, m_layoutOptionRects[i], pBlue);
+                }
+            } else {
+                if (pThemeUnselBg) rt->FillRoundedRectangle(optR, pThemeUnselBg);
+                if (pFontThemeBtn) {
+                    rt->DrawTextW(layoutTitles[i], static_cast<UINT32>(wcslen(layoutTitles[i])), pFontThemeBtn, m_layoutOptionRects[i], m_pTextSecondary);
+                }
+            }
+        }
+
+        // 说明文字: "仅改变未展开指标的形态；展开项直接变为详情卡片。" (Figma 248:3779 / 248:3854)
+        float hintY = layoutOptY + optH + 6.0f; // Y = 181
+        if (pFontSub) {
+            rt->DrawTextW(L"仅改变未展开指标的形态；展开项直接变为详情卡片。", 25, pFontSub, D2D1::RectF(startX, hintY, endX, hintY + 15.0f), m_pTextMuted);
+        }
+
+        bool showGlassOptions = (m_settings.themeMode == 0 || m_settings.themeMode == 3);
+
+        if (showGlassOptions) {
+            // 背景不透明度说明行
+            float opacY = hintY + 22.0f;
+            if (pFontItemLabel) {
+                rt->DrawTextW(L"背景不透明度", 6, pFontItemLabel, D2D1::RectF(startX, opacY, startX + 140.0f, opacY + 18.0f), m_pTextSecondary);
+            }
+            int opacPct = static_cast<int>(m_settings.glassOpacity * 100.0f + 0.5f);
+            wchar_t opacBuf[16];
+            swprintf_s(opacBuf, L"%d%%", opacPct);
+            if (pFontOpacPct) {
+                rt->DrawTextW(opacBuf, static_cast<UINT32>(wcslen(opacBuf)), pFontOpacPct, D2D1::RectF(endX - 80.0f, opacY, endX, opacY + 18.0f), m_pTextPrimary);
+            }
+
+            // 滑块区域: 338 x 18
+            float sliderY = opacY + 24.0f;
+            float trackY = sliderY + 7.0f;
+            float trackH = 4.0f;
+            m_sliderTrackRect = D2D1::RectF(startX, sliderY, endX, sliderY + 18.0f);
+
+            D2D1_ROUNDED_RECT inactTrack = D2D1::RoundedRect(D2D1::RectF(startX, trackY, endX, trackY + trackH), 2.0f, 2.0f);
+            if (pSliderTrackBg) rt->FillRoundedRectangle(inactTrack, pSliderTrackBg);
+
+            float normOpac = std::clamp(m_settings.glassOpacity, 0.10f, 1.00f);
+            float filledW = contentW * normOpac;
+            D2D1_ROUNDED_RECT actTrack = D2D1::RoundedRect(D2D1::RectF(startX, trackY, startX + filledW, trackY + trackH), 2.0f, 2.0f);
+            if (pBlue) rt->FillRoundedRectangle(actTrack, pBlue);
+
+            float thumbX = startX + filledW;
+            thumbX = std::clamp(thumbX, startX + 7.0f, endX - 7.0f);
+            float thumbCenterY = trackY + trackH * 0.5f;
+
+            if (pThumbShadow) {
+                rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, thumbCenterY + 1.0f), 7.0f, 7.0f), pThumbShadow);
+            }
+            if (pWhite && pBlue) {
+                D2D1_ELLIPSE thumbEll = D2D1::Ellipse(D2D1::Point2F(thumbX, thumbCenterY), 7.0f, 7.0f);
+                rt->FillEllipse(thumbEll, pWhite);
+                rt->DrawEllipse(thumbEll, pBlue, 1.0f);
+            }
+        } else {
+            m_sliderTrackRect = D2D1::RectF(0, 0, 0, 0);
+        }
+
+        // 第一条分割线
+        float div1Y = showGlassOptions ? 260.0f : 204.0f;
         if (pDivider) {
-            rt->DrawLine(D2D1::Point2F(startX, 204.0f), D2D1::Point2F(endX, 204.0f), pDivider, 1.0f);
+            rt->DrawLine(D2D1::Point2F(startX, div1Y), D2D1::Point2F(endX, div1Y), pDivider, 1.0f);
         }
 
         // ==========================================
-        // 5. 悬浮条指标设置区 (X=17, Y=217, 388 x 135)
+        // 5. 悬浮条指标设置区 (388 x 135)
+        // 亮色玻璃/跟随系统: Y=217; 纯白/深色: Y=169
         // ==========================================
-        float sec2Y = 217.0f;
+        float sec2Y = showGlassOptions ? 217.0f : 169.0f;
         if (pFontSec) {
             rt->DrawTextW(L"悬浮条指标", 5, pFontSec, D2D1::RectF(startX, sec2Y, startX + 140.0f, sec2Y + 18.0f), m_pTextPrimary);
         }
-        float subY = 237.0f;
+        float subY = sec2Y + 24.0f; // 241 or 193
         if (pFontSub) {
             rt->DrawTextW(L"拖动调整顺序 • 隐藏不常看的指标", 17, pFontSub, D2D1::RectF(startX, subY, startX + 280.0f, subY + 15.0f), m_pTextMuted);
         }
 
-        // 指标设置行: 388 x 18; Y = 262, 286, 310, 334; 行间距 6; 起点间隔 24
-        // 拖动图标: 12 x 12, 每行左侧垂直居中
-        // 指标文字: 高 18, X = 37
-        // 开关: 32 x 18, 圆角 9, X = 373 (终点 405)
-        // 开关白色圆点: 14 x 14, 距开关上下边缘 2; 开启时 X=16 (相对于开关), 关闭时 X=2
-        const float metricYs[4] = { 262.0f, 286.0f, 310.0f, 334.0f };
+        // 指标设置行: 4 行, 起点间隔 24 (18 DIP 行高 + 6 DIP 留白)
+        // 亮色玻璃/跟随系统: Y = 262, 286, 310, 334
+        // 纯白/深色: Y = 214, 238, 262, 286
+        float rowBaseY = sec2Y + 45.0f; // 262 or 214
         struct MetricToggle {
             const wchar_t* name;
             bool isChecked;
@@ -4347,9 +4619,9 @@ void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, floa
         };
 
         for (int i = 0; i < 4; ++i) {
-            float rowY = metricYs[i];
+            float rowY = rowBaseY + i * 24.0f;
 
-            // 拖动图标: 12 x 12, 每行左侧 (X: 17, Y: rowY + 3)
+            // 拖动图标: 12 x 12, 每行左侧 (X: 17, 行内 Y: 3)
             if (pGripDot) {
                 float iconX = startX + 2.0f;
                 float iconY = rowY + 3.0f;
@@ -4360,7 +4632,7 @@ void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, floa
                 }
             }
 
-            // 指标文字: X = 37, 高 18
+            // 指标文字: X = 37, 字体 12 Regular / 18
             if (pFontItemLabel) {
                 rt->DrawTextW(metrics[i].name, static_cast<UINT32>(wcslen(metrics[i].name)), pFontItemLabel, D2D1::RectF(37.0f, rowY, 37.0f + 160.0f, rowY + 18.0f), m_pTextPrimary);
             }
@@ -4373,14 +4645,14 @@ void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, floa
             D2D1_ROUNDED_RECT swR = D2D1::RoundedRect(m_metricToggleRects[i], 9.0f, 9.0f);
 
             if (metrics[i].isChecked) {
-                // 开启: 背景 #266BCE, 白色圆点 X = swX + 16
+                // 开启: 背景 #266BCE, 白色圆点 X = swX + 16, 距上下边缘 2
                 if (pBlue) rt->FillRoundedRectangle(swR, pBlue);
                 if (pWhite) {
                     D2D1_ROUNDED_RECT knobR = D2D1::RoundedRect(D2D1::RectF(swX + 16.0f, rowY + 2.0f, swX + 16.0f + 14.0f, rowY + 2.0f + 14.0f), 7.0f, 7.0f);
                     rt->FillRoundedRectangle(knobR, pWhite);
                 }
             } else {
-                // 关闭: 背景 #C2CBD9, 白色圆点 X = swX + 2
+                // 关闭: 背景 #C2CBD9, 白色圆点 X = swX + 2, 距上下边缘 2
                 if (pToggleOffBg) rt->FillRoundedRectangle(swR, pToggleOffBg);
                 if (pWhite) {
                     D2D1_ROUNDED_RECT knobR = D2D1::RoundedRect(D2D1::RectF(swX + 2.0f, rowY + 2.0f, swX + 2.0f + 14.0f, rowY + 2.0f + 14.0f), 7.0f, 7.0f);
@@ -4389,25 +4661,24 @@ void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, floa
             }
         }
 
-        // ==========================================
-        // 6. 第二条分割线 (X=17, Y=364, 388 x 1, #C2CBD9)
-        // ==========================================
+        // 第二条分割线
+        // 亮色玻璃/跟随系统: Y = 364; 纯白/深色: Y = 316
+        float div2Y = showGlassOptions ? 364.0f : 316.0f;
         if (pDivider) {
-            rt->DrawLine(D2D1::Point2F(startX, 364.0f), D2D1::Point2F(endX, 364.0f), pDivider, 1.0f);
+            rt->DrawLine(D2D1::Point2F(startX, div2Y), D2D1::Point2F(endX, div2Y), pDivider, 1.0f);
         }
 
         // ==========================================
-        // 7. 显示与提醒设置区 (X=17, Y=377, 388 x 114)
-        //    底部四个设置行: 388 x 18; Y = 401, 425, 449, 473; 行间距 6; 起点间隔 24
-        //    标签左对齐到 X=17，选项值统一右对齐到 X=405
+        // 7. 显示与提醒设置区
+        // 亮色玻璃/跟随系统: Y=377 (高114); 纯白/深色: Y=329 (高90)
         // ==========================================
-        float sec3Y = 377.0f;
+        float sec3Y = showGlassOptions ? 377.0f : 329.0f;
         if (pFontSec) {
             rt->DrawTextW(L"显示与提醒", 5, pFontSec, D2D1::RectF(startX, sec3Y, startX + 140.0f, sec3Y + 18.0f), m_pTextSecondary);
         }
 
-        // 行 1: 更新间隔 (Y=401)
-        float r1Y = 401.0f;
+        // 行 1: 更新间隔 (Y = 401 or 353)
+        float r1Y = sec3Y + 24.0f;
         if (pFontItemLabel) {
             rt->DrawTextW(L"更新间隔", 4, pFontItemLabel, D2D1::RectF(startX, r1Y, startX + 120.0f, r1Y + 18.0f), m_pTextSecondary);
         }
@@ -4419,8 +4690,8 @@ void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, floa
             rt->DrawTextW(intBuf, static_cast<UINT32>(wcslen(intBuf)), pFontItemVal, m_intervalRect, m_pTextPrimary);
         }
 
-        // 行 2: 温度单位 (Y=425)
-        float r2Y = 425.0f;
+        // 行 2: 温度单位 (Y = 425 or 377)
+        float r2Y = r1Y + 24.0f;
         if (pFontItemLabel) {
             rt->DrawTextW(L"温度单位", 4, pFontItemLabel, D2D1::RectF(startX, r2Y, startX + 120.0f, r2Y + 18.0f), m_pTextSecondary);
         }
@@ -4430,8 +4701,8 @@ void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, floa
             rt->DrawTextW(unitStr, static_cast<UINT32>(wcslen(unitStr)), pFontItemVal, m_tempUnitRect, m_pTextPrimary);
         }
 
-        // 行 3: CPU 高温提醒 (Y=449)
-        float r3Y = 449.0f;
+        // 行 3: CPU 高温提醒 (Y = 449 or 401)
+        float r3Y = r2Y + 24.0f;
         if (pFontItemLabel) {
             rt->DrawTextW(L"CPU 高温提醒", 7, pFontItemLabel, D2D1::RectF(startX, r3Y, startX + 140.0f, r3Y + 18.0f), m_pTextSecondary);
         }
@@ -4443,29 +4714,32 @@ void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, floa
             rt->DrawTextW(alertBuf, static_cast<UINT32>(wcslen(alertBuf)), pFontItemVal, m_highTempAlertRect, m_pTextPrimary);
         }
 
-        // 行 4: 减少透明效果 (Y=473)
-        // 包含开关: 32 x 18, 圆角 9, X = 373 -> 405
-        float r4Y = 473.0f;
-        if (pFontItemLabel) {
-            rt->DrawTextW(L"减少透明效果", 6, pFontItemLabel, D2D1::RectF(startX, r4Y, startX + 140.0f, r4Y + 18.0f), m_pTextSecondary);
-        }
-        float redSwX = 373.0f;
-        float redSwW = 32.0f;
-        float redSwH = 18.0f;
-        m_reduceTransRect = D2D1::RectF(redSwX, r4Y, redSwX + redSwW, r4Y + redSwH);
-        D2D1_ROUNDED_RECT redR = D2D1::RoundedRect(m_reduceTransRect, 9.0f, 9.0f);
-        if (m_settings.reduceTransparency) {
-            if (pBlue) rt->FillRoundedRectangle(redR, pBlue);
-            if (pWhite) {
-                D2D1_ROUNDED_RECT knobR = D2D1::RoundedRect(D2D1::RectF(redSwX + 16.0f, r4Y + 2.0f, redSwX + 16.0f + 14.0f, r4Y + 2.0f + 14.0f), 7.0f, 7.0f);
-                rt->FillRoundedRectangle(knobR, pWhite);
+        // 行 4: 减少透明效果 (仅亮色玻璃/跟随系统显示, Y = 473)
+        if (showGlassOptions) {
+            float r4Y = r3Y + 24.0f;
+            if (pFontItemLabel) {
+                rt->DrawTextW(L"减少透明效果", 6, pFontItemLabel, D2D1::RectF(startX, r4Y, startX + 140.0f, r4Y + 18.0f), m_pTextSecondary);
+            }
+            float redSwX = 373.0f;
+            float redSwW = 32.0f;
+            float redSwH = 18.0f;
+            m_reduceTransRect = D2D1::RectF(redSwX, r4Y, redSwX + redSwW, r4Y + redSwH);
+            D2D1_ROUNDED_RECT redR = D2D1::RoundedRect(m_reduceTransRect, 9.0f, 9.0f);
+            if (m_settings.reduceTransparency) {
+                if (pBlue) rt->FillRoundedRectangle(redR, pBlue);
+                if (pWhite) {
+                    D2D1_ROUNDED_RECT knobR = D2D1::RoundedRect(D2D1::RectF(redSwX + 16.0f, r4Y + 2.0f, redSwX + 16.0f + 14.0f, r4Y + 2.0f + 14.0f), 7.0f, 7.0f);
+                    rt->FillRoundedRectangle(knobR, pWhite);
+                }
+            } else {
+                if (pToggleOffBg) rt->FillRoundedRectangle(redR, pToggleOffBg);
+                if (pWhite) {
+                    D2D1_ROUNDED_RECT knobR = D2D1::RoundedRect(D2D1::RectF(redSwX + 2.0f, r4Y + 2.0f, redSwX + 2.0f + 14.0f, r4Y + 2.0f + 14.0f), 7.0f, 7.0f);
+                    rt->FillRoundedRectangle(knobR, pWhite);
+                }
             }
         } else {
-            if (pToggleOffBg) rt->FillRoundedRectangle(redR, pToggleOffBg);
-            if (pWhite) {
-                D2D1_ROUNDED_RECT knobR = D2D1::RoundedRect(D2D1::RectF(redSwX + 2.0f, r4Y + 2.0f, redSwX + 2.0f + 14.0f, r4Y + 2.0f + 14.0f), 7.0f, 7.0f);
-                rt->FillRoundedRectangle(knobR, pWhite);
-            }
+            m_reduceTransRect = D2D1::RectF(0, 0, 0, 0);
         }
 
     } else if (m_settings.activeTab == 1) {
@@ -4532,6 +4806,1104 @@ void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, floa
     SafeRelease(&pFontThemeBtn);
     SafeRelease(&pFontOpacPct);
 }
+void ProDashboardWindow::DrawWhiteCpuDetails(ID2D1DCRenderTarget* rt, bool standalone) {
+    D2D1_MATRIX_3X2_F original; rt->GetTransform(&original);
+    const float dx = standalone ? -1.f : 0.f, dy = standalone ? -42.f : 0.f;
+    rt->SetTransform(D2D1::Matrix3x2F::Translation(dx,dy)*original);
+    auto* dw = m_renderer.GetDWriteFactory();
+    const auto primary = D2D1::ColorF(0x192739), muted = D2D1::ColorF(0x53657A);
+    const auto subtle = D2D1::ColorF(0x64748B), blue = D2D1::ColorF(0x266BCE);
+    const float extra = CpuCoreExtraHeight();
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    rt->CreateSolidColorBrush(D2D1::ColorF(0xF7F9FC), &brush);
+    if (!brush) {rt->SetTransform(original);return;}
+    const auto card = D2D1::RoundedRect(D2D1::RectF(11.5f, 50.5f, 348.5f, 410.5f+extra), 9.5f, 9.5f);
+    if (!standalone) {
+        rt->FillRoundedRectangle(card, brush.Get());
+        brush->SetColor(D2D1::ColorF(0xDDE3EB)); rt->DrawRoundedRectangle(card, brush.Get(), 1);
+    }
+    auto text = [&](const wchar_t* value, D2D1_RECT_F box, float size, float lineHeight,
+        DWRITE_FONT_WEIGHT weight, D2D1_COLOR_F color, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING) {
+        m_overviewVisuals.Text(rt, dw, value, box, size, lineHeight, weight, color, align);
+    };
+    if (!standalone) text(L"CPU", D2D1::RectF(24,55,338,75),13,24,DWRITE_FONT_WEIGHT_BOLD,primary);
+    wchar_t value[64];
+    const bool validUsage=std::isfinite(m_snapshot.cpuUsageTotal) && m_snapshot.cpuUsageTotal>=0;
+    if (validUsage) swprintf_s(value, L"%.0f", std::clamp(m_snapshot.cpuUsageTotal,0.0f,100.0f));
+    else wcscpy_s(value,L"—");
+    text(value,D2D1::RectF(24,79,94,121),28,42,DWRITE_FONT_WEIGHT_MEDIUM,blue);
+    const float numberWidth = m_overviewVisuals.Measure(dw,value,28,DWRITE_FONT_WEIGHT_MEDIUM);
+    if (validUsage) text(L"%",D2D1::RectF(28+numberWidth,90,94,110),13,20,DWRITE_FONT_WEIGHT_NORMAL,blue);
+    if (std::isfinite(m_snapshot.cpuFreqGHz) && m_snapshot.cpuFreqGHz > 0) swprintf_s(value,L"%.2f GHz",m_snapshot.cpuFreqGHz);
+    else wcscpy_s(value,L"— GHz");
+    text(value,D2D1::RectF(102,90,160,110),m_overviewVisuals.Measure(dw,value,13,DWRITE_FONT_WEIGHT_MEDIUM)>58 ? 11.f : 13.f,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    if (std::isfinite(m_snapshot.cpuTempC) && m_snapshot.cpuTempC > 0) {
+        const bool fahrenheit = m_settings.tempUnit == 1;
+        swprintf_s(value,fahrenheit ? L"%.0f°F" : L"%.0f°C",fahrenheit ? m_snapshot.cpuTempC*1.8f+32 : m_snapshot.cpuTempC);
+    } else wcscpy_s(value,m_settings.tempUnit==1 ? L"—°F" : L"—°C");
+    text(value,D2D1::RectF(165,90,202,110),m_overviewVisuals.Measure(dw,value,13,DWRITE_FONT_WEIGHT_MEDIUM)>37 ? 11.f : 13.f,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    std::wstring model = m_snapshot.cpuBrand.empty() ? L"处理器型号不可用" : m_snapshot.cpuBrand;
+    if (m_overviewVisuals.Measure(dw,model.c_str(),11,DWRITE_FONT_WEIGHT_BOLD) > 128) {
+        do { model.pop_back(); } while (!model.empty() && m_overviewVisuals.Measure(dw,(model+L"…").c_str(),11,DWRITE_FONT_WEIGHT_BOLD)>128);
+        model += L"…";
+    }
+    text(model.c_str(),D2D1::RectF(210,91.5f,338,108.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,subtle,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    brush->SetColor(D2D1::ColorF(0xDDE3EB,.5f));
+    for (float y : {131.05f,154.51f,177.97f}) rt->FillRectangle(D2D1::RectF(24,y,338,y+.757f),brush.Get());
+    const auto& history=m_snapshot.cpuHistory;
+    auto valid=[&](size_t i) {return std::isfinite(history[i]) && history[i]>=0 && history[i]<=100;};
+    float maximum=50;size_t validCount=0;
+    for(size_t i=0;i<history.Size();++i) if(valid(i)) {maximum=std::max(maximum,history[i]*1.1f);++validCount;}
+    auto point=[&](size_t i) {return D2D1::Point2F(24+314*(60-history.Size()+static_cast<float>(i))/59,178-53*history[i]/maximum);};
+    // Preserve missing intervals; neither bridge gaps nor stretch partial history to sixty samples.
+    for(size_t start=0;start<history.Size();) {
+        if(!valid(start)) {++start;continue;}
+        size_t end=start+1;while(end<history.Size() && valid(end)) ++end;
+        if(end==start+1) {brush->SetColor(blue);rt->FillEllipse(D2D1::Ellipse(point(start),1.5f,1.5f),brush.Get());start=end;continue;}
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> line,area;
+        Microsoft::WRL::ComPtr<ID2D1GeometrySink> lineSink,areaSink;
+        auto* factory=m_renderer.GetD2DFactory();
+        if(SUCCEEDED(factory->CreatePathGeometry(&line)) && SUCCEEDED(factory->CreatePathGeometry(&area)) &&
+            SUCCEEDED(line->Open(&lineSink)) && SUCCEEDED(area->Open(&areaSink))) {
+            lineSink->BeginFigure(point(start),D2D1_FIGURE_BEGIN_HOLLOW);
+            areaSink->BeginFigure(D2D1::Point2F(point(start).x,178),D2D1_FIGURE_BEGIN_FILLED);
+            for(size_t i=start;i<end;++i) {if(i>start) lineSink->AddLine(point(i));areaSink->AddLine(point(i));}
+            areaSink->AddLine(D2D1::Point2F(point(end-1).x,178));areaSink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            lineSink->EndFigure(D2D1_FIGURE_END_OPEN);lineSink->Close();areaSink->Close();
+            brush->SetColor(D2D1::ColorF(0x266BCE,.13f));rt->FillGeometry(area.Get(),brush.Get());
+            brush->SetColor(blue);rt->DrawGeometry(line.Get(),brush.Get(),1.5f);
+        }
+        start=end;
+    }
+    if(!validCount) text(L"等待有效采样",D2D1::RectF(24,146,338,163),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    text(L"60 秒前",D2D1::RectF(24,182,100,199),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    text(L"现在",D2D1::RectF(300,182,338,199),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    if(std::isfinite(m_snapshot.cpuUserPercent) && validUsage) swprintf_s(value,L"● 用户 %.0f%%",std::clamp(m_snapshot.cpuUserPercent,0.f,100.f));else wcscpy_s(value,L"● 用户 —");
+    text(value,D2D1::RectF(24,203,115,220),11,17,DWRITE_FONT_WEIGHT_BOLD,blue);
+    if(std::isfinite(m_snapshot.cpuKernelPercent) && validUsage) swprintf_s(value,L"● 系统 %.0f%%",std::clamp(m_snapshot.cpuKernelPercent,0.f,100.f));else wcscpy_s(value,L"● 系统 —");
+    text(value,D2D1::RectF(159.5f,203,250,220),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+    if(std::isfinite(m_snapshot.cpuIdlePercent) && validUsage) swprintf_s(value,L"空闲 %.0f%%",std::clamp(m_snapshot.cpuIdlePercent,0.f,100.f));else wcscpy_s(value,L"空闲 —");
+    text(value,D2D1::RectF(265,203,338,220),11,17,DWRITE_FONT_WEIGHT_BOLD,subtle,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    text(L"逻辑处理器",D2D1::RectF(24,224,154,244),13,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    const size_t count=m_snapshot.cpuCoreUsage.size();
+    m_cpuCoreRects.clear(); m_cpuCoreRects.reserve(count);
+    if (count) swprintf_s(value,L"%zu 个",count); else wcscpy_s(value,L"—");
+    text(value,D2D1::RectF(250,225.5f,338,242.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    for (size_t i=0;i<count;++i) {
+        const size_t row=i/8, columns=std::min<size_t>(8,count-row*8);
+        const float x=24+(314-(columns*24+(columns-1)*12))*.5f+static_cast<float>(i%8)*36;
+        const float y=248+static_cast<float>(row)*34;
+        m_cpuCoreRects.push_back(D2D1::RectF(x+dx,y+dy-m_cpuScroll,x+24+dx,y+28+dy-m_cpuScroll));
+        const auto bucket=D2D1::RoundedRect(D2D1::RectF(x+.5f,y+.5f,x+23.5f,y+27.5f),5.5f,5.5f);
+        brush->SetColor(D2D1::ColorF(0xF7F9FC)); rt->FillRoundedRectangle(bucket,brush.Get());
+        Microsoft::WRL::ComPtr<ID2D1RoundedRectangleGeometry> clip;
+        if (SUCCEEDED(m_renderer.GetD2DFactory()->CreateRoundedRectangleGeometry(
+            D2D1::RoundedRect(D2D1::RectF(x+1,y+1,x+23,y+27),5,5),&clip))) {
+            const float usage=std::isfinite(m_snapshot.cpuCoreUsage[i]) ? std::clamp(m_snapshot.cpuCoreUsage[i],0.0f,100.0f)/100 : 0.f;
+            // Height and opacity convey load; zero is truly empty, 100% fills the inner bucket.
+            rt->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(),clip.Get()),nullptr);
+            brush->SetColor(D2D1::ColorF(0x266BCE,.18f+.40f*usage));
+            rt->FillRectangle(D2D1::RectF(x+1,y+27-26*usage,x+23,y+27),brush.Get());
+            rt->PopLayer();
+        }
+        brush->SetColor(blue); rt->DrawRoundedRectangle(bucket,brush.Get(),1);
+        if (m_cpuKeyboardFocus && m_focusedCpuCore==static_cast<int>(i))
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x-.5f,y-.5f,x+24.5f,y+28.5f),6,6),brush.Get(),2);
+        swprintf_s(value,L"%zu",i);
+        text(value,D2D1::RectF(x+1,y+5,x+23,y+23),12,18,DWRITE_FONT_WEIGHT_BOLD,primary,DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
+    if (!count) text(L"逻辑处理器数据不可用",D2D1::RectF(24,248,338,310),11,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    brush->SetColor(D2D1::ColorF(0xDDE3EB)); rt->FillRectangle(D2D1::RectF(24,314+extra,338,315+extra),brush.Get());
+    text(L"占用最高的进程",D2D1::RectF(24,319+extra,240,339+extra),13,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    text(L"CPU",D2D1::RectF(300,320.5f+extra,338,337.5f+extra),11,17,DWRITE_FONT_WEIGHT_BOLD,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    for (size_t i=0;i<std::min<size_t>(3,m_snapshot.topProcesses.size());++i) {
+        const auto& process=m_snapshot.topProcesses[i]; const float y=343+extra+21*static_cast<float>(i);
+        std::wstring name=process.name;
+        if(m_overviewVisuals.Measure(dw,name.c_str(),11,DWRITE_FONT_WEIGHT_BOLD)>262)
+            while (!name.empty() && m_overviewVisuals.Measure(dw,(name+L"…").c_str(),11,DWRITE_FONT_WEIGHT_BOLD)>262) name.pop_back();
+        if (name!=process.name) name+=L"…";
+        text(name.c_str(),D2D1::RectF(24,y,286,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+        if (std::isfinite(process.cpuPercent) && process.cpuPercent>=0) swprintf_s(value,L"%.1f%%",std::clamp(process.cpuPercent,0.f,100.f));
+        else wcscpy_s(value,L"—");
+        text(value,D2D1::RectF(290,y,338,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,primary,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    }
+    if (m_snapshot.topProcesses.empty()) text(L"暂无进程数据",D2D1::RectF(24,343+extra,338,360+extra),11,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    rt->SetTransform(original);
+}
+
+void ProDashboardWindow::DrawWhiteTempDirect(ID2D1DCRenderTarget* rt) {
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    rt->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF),&brush);if(!brush) return;
+    auto* dw=m_renderer.GetDWriteFactory();
+    const auto primary=D2D1::ColorF(0x192739),muted=D2D1::ColorF(0x53657A),subtle=D2D1::ColorF(0x64748B),red=D2D1::ColorF(0xBC5648);
+    auto text=[&](const wchar_t* value,D2D1_RECT_F box,float size,float line,DWRITE_FONT_WEIGHT weight,D2D1_COLOR_F color,DWRITE_TEXT_ALIGNMENT align=DWRITE_TEXT_ALIGNMENT_LEADING) {m_overviewVisuals.Text(rt,dw,value,box,size,line,weight,color,align);};
+    auto valid=[](float t) {return std::isfinite(t)&&t>0&&t<=200;};
+    const bool fahrenheit=m_settings.tempUnit==1;
+    auto convert=[&](float t) {return fahrenheit ? t*1.8f+32 : t;};
+    m_overviewVisuals.Shadow(rt,D2D1::RectF(0,0,360,289),20,24,0,8,.07f);
+    const auto panel=D2D1::RoundedRect(D2D1::RectF(.5f,.5f,359.5f,288.5f),19.5f,19.5f);
+    rt->FillRoundedRectangle(panel,brush.Get());brush->SetColor(D2D1::ColorF(0xDDE3EB));rt->DrawRoundedRectangle(panel,brush.Get(),1);
+    text(L"CPU 温度",D2D1::RectF(11,5,349,29),16,24,DWRITE_FONT_WEIGHT_BOLD,primary);
+    wchar_t number[32];if(valid(m_snapshot.cpuTempC)) swprintf_s(number,L"%.0f",convert(m_snapshot.cpuTempC));else wcscpy_s(number,L"—");
+    const float numberW=m_overviewVisuals.Measure(dw,number,28,DWRITE_FONT_WEIGHT_MEDIUM);
+    text(number,D2D1::RectF(11,33,11+numberW,75),28,42,DWRITE_FONT_WEIGHT_MEDIUM,red);
+    text(fahrenheit ? L"°F" : L"°C",D2D1::RectF(15+numberW,43.5f,43+numberW,64.5f),14,21,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    // Keep three-digit Fahrenheit readouts clear of the status and model slots.
+    const float badgeX=std::max(87.f,47+numberW);
+    brush->SetColor(D2D1::ColorF(0xF7F9FC));rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(badgeX,41.5f,badgeX+74,66.5f),8,8),brush.Get());
+    const bool hot=valid(m_snapshot.cpuTempC)&&m_settings.highTempAlert>0&&m_snapshot.cpuTempC>=m_settings.highTempAlert;
+    text(!valid(m_snapshot.cpuTempC) ? L"— 未提供" : hot ? L"● 温度偏高" : L"● 温度正常",D2D1::RectF(badgeX+4,45.5f,badgeX+70,62.5f),11,17,DWRITE_FONT_WEIGHT_MEDIUM,!valid(m_snapshot.cpuTempC) ? muted : hot ? red : D2D1::ColorF(0x138873));
+    std::wstring model=m_snapshot.cpuBrand.empty() ? L"型号未提供" : m_snapshot.cpuBrand;
+    const float modelWidth=349-badgeX-86;
+    if(m_overviewVisuals.Measure(dw,model.c_str(),11,DWRITE_FONT_WEIGHT_BOLD)>modelWidth) {
+        while(!model.empty() && m_overviewVisuals.Measure(dw,(model+L"…").c_str(),11,DWRITE_FONT_WEIGHT_BOLD)>modelWidth) model.pop_back();
+        model+=L"…";
+    }
+    text(model.c_str(),D2D1::RectF(badgeX+86,45.5f,349,62.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,subtle,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    wchar_t interval[32];if(m_settings.updateIntervalSec==1) wcscpy_s(interval,L"每秒更新");else if(m_settings.updateIntervalSec==0) wcscpy_s(interval,L"每 0.5 秒更新");else swprintf_s(interval,L"每 %d 秒更新",m_settings.updateIntervalSec);
+    text(interval,D2D1::RectF(11,79,349,96),11,17,DWRITE_FONT_WEIGHT_NORMAL,subtle);
+    m_tempTargetRect={};m_tempChartRect=D2D1::RectF(11,100,349,149.5f);
+    brush->SetColor(D2D1::ColorF(0xDDE3EB,.4f));
+    for(float y : {104.67f,124.73f,144.8f}) rt->DrawLine(D2D1::Point2F(11,y),D2D1::Point2F(349,y),brush.Get(),.5f);
+    const auto& history=m_snapshot.tempHistory;float minimum=200,maximum=0,sum=0;size_t count=0;
+    for(size_t i=0;i<history.Size();++i) if(valid(history[i])) {minimum=std::min(minimum,history[i]);maximum=std::max(maximum,history[i]);sum+=history[i];++count;}
+    const float low=count ? minimum-5 : 0,span=count ? std::max(10.f,maximum-minimum+10) : 10;
+    auto point=[&](size_t i) {return D2D1::Point2F(349-338.f*(history.Size()-1-i)/59,144.8f-(history[i]-low)/span*40.13f);};
+    brush->SetColor(red);
+    for(size_t i=0;i<history.Size();++i) if(valid(history[i])) {const auto p=point(i);if(i&&valid(history[i-1])) rt->DrawLine(point(i-1),p,brush.Get(),1.5f);else rt->FillEllipse(D2D1::Ellipse(p,.75f,.75f),brush.Get());}
+    if(!count) text(L"暂无有效温度历史",D2D1::RectF(11,118,349,135),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    wchar_t axis[32];swprintf_s(axis,L"%g 秒前",60*(m_settings.updateIntervalSec==0 ? .5 : static_cast<double>(m_settings.updateIntervalSec)));
+    text(axis,D2D1::RectF(11,157,90,174),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    text(L"现在",D2D1::RectF(280,157,349,174),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    if(m_tempProbeActive) {
+        const int slot=std::clamp(m_tempProbeSecAgo,0,59);
+        const int index=static_cast<int>(history.Size())-1-slot;
+        const float x=349-338.f*slot/59;
+        brush->SetColor(D2D1::ColorF(0xBC5648,.5f));rt->DrawLine(D2D1::Point2F(x,100),D2D1::Point2F(x,143.87f),brush.Get(),.87f);
+        wchar_t probe[64];const float seconds=slot*(m_settings.updateIntervalSec==0 ? .5f : static_cast<float>(m_settings.updateIntervalSec));
+        if(index>=0&&valid(history[index])) swprintf_s(probe,L"%g 秒前 · %.0f°%s",seconds,convert(history[index]),fahrenheit ? L"F" : L"C");else swprintf_s(probe,L"%g 秒前 · 未提供",seconds);
+        const float px=std::clamp(x-17.43f,11.f,349-139.862f);
+        brush->SetColor(D2D1::ColorF(0xF7F9FC));rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(px,100,px+139.862f,133),8,8),brush.Get());
+        text(probe,D2D1::RectF(px+8,108,px+131.862f,125),11,17,DWRITE_FONT_WEIGHT_MEDIUM,red);
+    }
+    wchar_t stats[64];if(count) swprintf_s(stats,L"%.0f° / %.0f° / %.0f°",convert(minimum),convert(sum/count),convert(maximum));else wcscpy_s(stats,L"— / — / —");
+    wchar_t power[32],freq[32],fan[32];
+    if(std::isfinite(m_snapshot.cpuPowerWatts)&&m_snapshot.cpuPowerWatts>0) swprintf_s(power,L"%.0f W",m_snapshot.cpuPowerWatts);else wcscpy_s(power,L"—");
+    if(std::isfinite(m_snapshot.cpuFreqGHz)&&m_snapshot.cpuFreqGHz>0) swprintf_s(freq,L"%.2f GHz",m_snapshot.cpuFreqGHz);else wcscpy_s(freq,L"—");
+    if(m_snapshot.cpuFanRpm<0) wcscpy_s(fan,L"— 未提供");else if(m_snapshot.cpuFanRpm>=1000) swprintf_s(fan,L"%d,%03d RPM",m_snapshot.cpuFanRpm/1000,m_snapshot.cpuFanRpm%1000);else swprintf_s(fan,L"%d RPM",m_snapshot.cpuFanRpm);
+    const wchar_t* labels[]={L"最低 / 平均 / 最高",L"CPU 封装功耗",L"有效频率",L"CPU 风扇"};const wchar_t* values[]={stats,power,freq,fan};
+    for(int i=0;i<4;++i) {const float y=178+21.f*i;text(labels[i],D2D1::RectF(11,y,180,y+17),12,18,DWRITE_FONT_WEIGHT_NORMAL,muted);text(values[i],D2D1::RectF(180,y,349,y+17),12,18,DWRITE_FONT_WEIGHT_MEDIUM,primary,DWRITE_TEXT_ALIGNMENT_TRAILING);}
+    brush->SetColor(D2D1::ColorF(0xDDE3EB));rt->FillRectangle(D2D1::RectF(11,262,349,263),brush.Get());
+    m_tempAlertRect=D2D1::RectF(11,267,155,284);m_allSensorsRect=D2D1::RectF(230,267,349,284);
+    wchar_t alert[64];if(m_settings.highTempAlert>0) swprintf_s(alert,L"温度提醒  %.0f°%s  ▾",convert(static_cast<float>(m_settings.highTempAlert)),fahrenheit ? L"F" : L"C");else wcscpy_s(alert,L"温度提醒  关闭  ▾");
+    text(alert,m_tempAlertRect,11,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    text(L"查看全部传感器  ›",m_allSensorsRect,11,17,DWRITE_FONT_WEIGHT_BOLD,D2D1::ColorF(m_allSensorsHover ? 0x1D4ED8 : 0x266BCE),DWRITE_TEXT_ALIGNMENT_TRAILING);
+}
+
+void ProDashboardWindow::DrawWhiteCpuDirect(ID2D1DCRenderTarget* rt) {
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    rt->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF),&brush);if(!brush) return;
+    m_overviewVisuals.Shadow(rt,D2D1::RectF(0,0,360,m_dipHeight),20,24,0,8,.07f);
+    const auto panel=D2D1::RoundedRect(D2D1::RectF(.5f,.5f,359.5f,m_dipHeight-.5f),19.5f,19.5f);
+    rt->FillRoundedRectangle(panel,brush.Get());brush->SetColor(D2D1::ColorF(0xDDE3EB));rt->DrawRoundedRectangle(panel,brush.Get(),1);
+    m_overviewVisuals.Text(rt,m_renderer.GetDWriteFactory(),L"CPU 占用",D2D1::RectF(11,5,349,29),16,24,DWRITE_FONT_WEIGHT_BOLD,D2D1::ColorF(0x192739));
+    m_overviewLinkRect={}; // The direct-detail design has no fabricated footer link.
+    D2D1_MATRIX_3X2_F original;rt->GetTransform(&original);
+    rt->PushAxisAlignedClip(D2D1::RectF(11,33,349,m_dipHeight-5),D2D1_ANTIALIAS_MODE_ALIASED);
+    rt->SetTransform(D2D1::Matrix3x2F::Translation(0,-m_cpuScroll)*original);
+    DrawWhiteCpuDetails(rt,true);
+    rt->SetTransform(original);rt->PopAxisAlignedClip();
+    DrawCpuCorePeek(rt);
+}
+int ProDashboardWindow::HitCpuCore(float x,float y) const {
+    if(!IsWhiteCpu()) return -1;
+    if(y<(m_mode==Mode_DirectCpu ? 33.f : 50.f) || y>m_dipHeight-(m_mode==Mode_DirectCpu ? 5.f : 40.f)) return -1;
+    for(size_t i=0;i<m_cpuCoreRects.size();++i) {
+        const auto& r=m_cpuCoreRects[i];
+        if(x>=r.left && x<r.right && y>=r.top && y<r.bottom) return static_cast<int>(i);
+    }
+    return -1;
+}
+bool ProDashboardWindow::OnCpuKey(UINT key,bool shift) {
+    if(!IsWhiteCpu() || m_cpuCoreRects.empty() || m_snapshot.cpuCoreUsage.empty()) return false;
+    const int count=static_cast<int>(std::min(m_cpuCoreRects.size(),m_snapshot.cpuCoreUsage.size()));
+    int target=m_focusedCpuCore;
+    switch(key) {
+    case VK_TAB: target=target<0 ? (shift ? count-1 : 0) : (target+(shift ? count-1 : 1))%count;break;
+    case VK_RIGHT: target=target<0 ? 0 : std::min(count-1,target+1);break;
+    case VK_LEFT: target=target<0 ? 0 : std::max(0,target-1);break;
+    case VK_DOWN: target=target<0 ? 0 : std::min(count-1,target+8);break;
+    case VK_UP: target=target<0 ? 0 : std::max(0,target-8);break;
+    case VK_HOME: target=0;break;
+    case VK_END: target=count-1;break;
+    default: return false;
+    }
+    m_focusedCpuCore=target;m_cpuKeyboardFocus=true;m_hoveredCpuCore=-1;
+    const auto& rect=m_cpuCoreRects[target];
+    const float top=m_mode==Mode_DirectCpu ? 33.f : 50.f,bottom=m_dipHeight-(m_mode==Mode_DirectCpu ? 5.f : 40.f);
+    if(rect.top<top) m_cpuScroll=std::max(0.f,m_cpuScroll+rect.top-top);
+    else if(rect.bottom>bottom) m_cpuScroll=std::min(std::max(0.f,m_cpuFullHeight-m_dipHeight),m_cpuScroll+rect.bottom-bottom);
+    if(m_visible) Render();return true;
+}
+void ProDashboardWindow::ScrollCpu(float delta) {
+    if(!IsWhiteCpu()) return;
+    m_cpuScroll=std::clamp(m_cpuScroll+delta,0.f,std::max(0.f,m_cpuFullHeight-m_dipHeight));
+    m_hoveredCpuCore=-1;if(m_visible) Render();
+}
+void ProDashboardWindow::DrawCpuCorePeek(ID2D1DCRenderTarget* rt) {
+    const int core=m_cpuKeyboardFocus ? m_focusedCpuCore : m_hoveredCpuCore;
+    if(!IsWhiteCpu() || core<0 || core>=static_cast<int>(m_cpuCoreRects.size()) || core>=static_cast<int>(m_snapshot.cpuCoreUsage.size())) return;
+    const auto& r=m_cpuCoreRects[core];
+    if(r.bottom<33 || r.top>m_dipHeight-5) return;
+    const float x=std::clamp(r.left+20,11.f,195.f), y=std::clamp(r.top-52,33.f,std::max(33.f,m_dipHeight-53));
+    const auto box=D2D1::RectF(x,y,x+154,y+48);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    rt->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF),&brush);if(!brush) return;
+    m_overviewVisuals.Shadow(rt,box,10,12,0,4,.08f);
+    const auto card=D2D1::RoundedRect(D2D1::RectF(x+.5f,y+.5f,x+153.5f,y+47.5f),9.5f,9.5f);
+    rt->FillRoundedRectangle(card,brush.Get());brush->SetColor(D2D1::ColorF(0xDDE3EB));rt->DrawRoundedRectangle(card,brush.Get(),1);
+    rt->FillRectangle(D2D1::RectF(x+66,y+10,x+67,y+38),brush.Get());
+    auto text=[&](const wchar_t* value,float tx,float width,float ty,float size,float line,DWRITE_FONT_WEIGHT weight,unsigned color) {
+        m_overviewVisuals.Text(rt,m_renderer.GetDWriteFactory(),value,D2D1::RectF(tx,ty,tx+width,ty+line),size,line,weight,D2D1::ColorF(color));
+    };
+    text(L"当前利用率",x+8,50,y+4,10,14,DWRITE_FONT_WEIGHT_NORMAL,0x53657A);
+    text(L"逻辑处理器",x+75,76,y+4,10,14,DWRITE_FONT_WEIGHT_NORMAL,0x53657A);
+    wchar_t value[32];const float load=m_snapshot.cpuCoreUsage[core];
+    if(std::isfinite(load) && load>=0) swprintf_s(value,L"%.0f%%",std::clamp(load,0.f,100.f));else wcscpy_s(value,L"—");
+    text(value,x+8,50,y+22,16,22,DWRITE_FONT_WEIGHT_MEDIUM,0x266BCE);
+    swprintf_s(value,L"%d",core);text(value,x+75,76,y+22,16,22,DWRITE_FONT_WEIGHT_MEDIUM,0x192739);
+}
+
+void ProDashboardWindow::DrawWhiteSensorDetails(ID2D1DCRenderTarget* rt) {
+    auto* dw=m_renderer.GetDWriteFactory();
+    const auto primary=D2D1::ColorF(0x192739),muted=D2D1::ColorF(0x53657A);
+    const auto red=D2D1::ColorF(0xBC5648),border=D2D1::ColorF(0xDDE3EB),subtle=D2D1::ColorF(0x64748B);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    rt->CreateSolidColorBrush(D2D1::ColorF(0xF7F9FC),&brush);if(!brush) return;
+    const auto card=D2D1::RoundedRect(D2D1::RectF(11.5f,230.5f,348.5f,617.5f),9.5f,9.5f);
+    rt->FillRoundedRectangle(card,brush.Get());brush->SetColor(border);rt->DrawRoundedRectangle(card,brush.Get(),1);
+    auto text=[&](const wchar_t* value,D2D1_RECT_F box,float size,float lineHeight,DWRITE_FONT_WEIGHT weight,
+        D2D1_COLOR_F color,DWRITE_TEXT_ALIGNMENT align=DWRITE_TEXT_ALIGNMENT_LEADING) {
+        m_overviewVisuals.Text(rt,dw,value,box,size,lineHeight,weight,color,align);
+    };
+    const bool fahrenheit=m_settings.tempUnit==1;
+    auto convert=[&](float c) {return fahrenheit ? c*1.8f+32 : c;};
+    auto valid=[](float c) {return std::isfinite(c) && c>0 && c<=200;};
+    wchar_t value[96];
+    text(L"传感器",D2D1::RectF(24,235,338,255),13,24,DWRITE_FONT_WEIGHT_BOLD,primary);
+    text(L"温度",D2D1::RectF(24,259,50,279),13,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    text(L"● CPU 封装",D2D1::RectF(58,260.5f,200,277.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+    if(valid(m_snapshot.cpuTempC)) swprintf_s(value,L"%.0f",convert(m_snapshot.cpuTempC));else wcscpy_s(value,L"—");
+    text(value,D2D1::RectF(24,280,219,322),28,42,DWRITE_FONT_WEIGHT_MEDIUM,red);
+    const float width=m_overviewVisuals.Measure(dw,value,28,DWRITE_FONT_WEIGHT_MEDIUM);
+    text(fahrenheit ? L"°F" : L"°C",D2D1::RectF(28+width,292.5f,219,309.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+    const auto& history=m_snapshot.tempHistory;
+    float minimum=0,maximum=0;size_t validCount=0;
+    for(size_t i=0;i<history.Size();++i) if(valid(history[i])) {
+        minimum=validCount ? std::min(minimum,history[i]) : history[i];maximum=validCount ? std::max(maximum,history[i]) : history[i];++validCount;
+    }
+    if(validCount) swprintf_s(value,fahrenheit ? L"范围 %.0f–%.0f°F" : L"范围 %.0f–%.0f°C",convert(minimum),convert(maximum));
+    else wcscpy_s(value,L"范围 —");
+    const float rangeSize=m_overviewVisuals.Measure(dw,value,13,DWRITE_FONT_WEIGHT_MEDIUM)>111 ? 11.f : 13.f;
+    text(value,D2D1::RectF(227,291,338,311),rangeSize,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    brush->SetColor(D2D1::ColorF(0xDDE3EB,.5f));
+    for(float y : {328.75f,348.88f,369.0f}) rt->FillRectangle(D2D1::RectF(24,y,338,y+.719f),brush.Get());
+    if(validCount>=2) {
+        const float low=minimum-3,range=std::max(8.0f,maximum-minimum+6);
+        // Draw separate contiguous runs so missing samples never become zero-temperature spikes.
+        size_t start=0;
+        while(start<history.Size()) {
+            while(start<history.Size() && !valid(history[start])) ++start;
+            size_t end=start;while(end<history.Size() && valid(history[end])) ++end;
+            if(end-start>=2) {
+                Microsoft::WRL::ComPtr<ID2D1PathGeometry> line,area;
+                Microsoft::WRL::ComPtr<ID2D1GeometrySink> ls,as;
+                auto* factory=m_renderer.GetD2DFactory();
+                if(SUCCEEDED(factory->CreatePathGeometry(&line)) && SUCCEEDED(factory->CreatePathGeometry(&area)) &&
+                    SUCCEEDED(line->Open(&ls)) && SUCCEEDED(area->Open(&as))) {
+                    const float firstX=338-314*static_cast<float>(history.Size()-1-start)/59;
+                    as->BeginFigure(D2D1::Point2F(firstX,369),D2D1_FIGURE_BEGIN_FILLED);
+                    float lastX=firstX;
+                    for(size_t i=start;i<end;++i) {
+                        lastX=338-314*static_cast<float>(history.Size()-1-i)/59;
+                        const auto point=D2D1::Point2F(lastX,369-40.25f*std::clamp((history[i]-low)/range,0.0f,1.0f));
+                        if(i==start) ls->BeginFigure(point,D2D1_FIGURE_BEGIN_HOLLOW);else ls->AddLine(point);
+                        as->AddLine(point);
+                    }
+                    as->AddLine(D2D1::Point2F(lastX,369));as->EndFigure(D2D1_FIGURE_END_CLOSED);
+                    ls->EndFigure(D2D1_FIGURE_END_OPEN);ls->Close();as->Close();
+                    brush->SetColor(D2D1::ColorF(0xBC5648,.12f));rt->FillGeometry(area.Get(),brush.Get());
+                    brush->SetColor(red);rt->DrawGeometry(line.Get(),brush.Get(),1.5f);
+                }
+            }
+            start=end+1;
+        }
+    } else text(L"暂无有效温度历史",D2D1::RectF(24,340,338,357),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    wcscpy_s(value,L"60 秒前");
+    text(value,D2D1::RectF(24,370,110,387),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    text(L"现在",D2D1::RectF(290,370,338,387),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    const wchar_t* tempLabels[]={L"CPU 封装",L"GPU 核心",L"SSD 控制器"};
+    const float temps[]={m_snapshot.cpuTempC,m_snapshot.gpuTempC,m_snapshot.ssdTempC};
+    const D2D1_COLOR_F tempColors[]={red,D2D1::ColorF(0x8259C2),D2D1::ColorF(0x2278A1)};
+    for(int i=0;i<3;++i) {
+        const float y=391+i*21.0f;
+        text(tempLabels[i],D2D1::RectF(24,y,220,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+        if(valid(temps[i])) swprintf_s(value,fahrenheit ? L"%.0f°F" : L"%.0f°C",convert(temps[i]));else wcscpy_s(value,L"—");
+        text(value,D2D1::RectF(250,y,338,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,valid(temps[i]) ? tempColors[i] : subtle,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    }
+    for(float y : {454.0f,546.0f}) {brush->SetColor(border);rt->FillRectangle(D2D1::RectF(24,y,338,y+1),brush.Get());}
+    text(L"功耗与频率",D2D1::RectF(24,459,220,479),13,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    text(L"实时",D2D1::RectF(280,460.5f,338,477.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    const wchar_t* powerLabels[]={L"CPU 封装功耗",L"GPU 板卡功耗",L"CPU 有效频率"};
+    const float powers[]={m_snapshot.cpuPowerWatts,m_snapshot.gpuPowerWatts,m_snapshot.cpuFreqGHz};
+    for(int i=0;i<3;++i) {
+        const float y=483+i*21.0f;
+        text(powerLabels[i],D2D1::RectF(24,y,220,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+        if(std::isfinite(powers[i]) && powers[i]>0) swprintf_s(value,i==2 ? L"%.2f GHz" : L"%.0f W",powers[i]);else wcscpy_s(value,L"—");
+        text(value,D2D1::RectF(240,y,338,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,primary,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    }
+    text(L"风扇",D2D1::RectF(24,551,220,571),13,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    text(L"传感器状态",D2D1::RectF(240,552.5f,338,569.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    const int fans[]={m_snapshot.cpuFanRpm,m_snapshot.caseFanRpm};
+    for(int i=0;i<2;++i) {
+        const float y=575+i*21.0f;
+        const wchar_t* label=i ? (fans[i]<0 ? L"机箱风扇（未提供读数）" : L"机箱风扇") : (fans[i]<0 ? L"CPU 风扇（未提供读数）" : L"CPU 风扇");
+        text(label,D2D1::RectF(24,y,242,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+        if(fans[i]>=1000) swprintf_s(value,L"%d,%03d RPM",fans[i]/1000,fans[i]%1000);
+        else if(fans[i]>=0) swprintf_s(value,L"%d RPM",fans[i]);else wcscpy_s(value,L"—");
+        text(value,D2D1::RectF(246,y,338,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,fans[i]<0 ? subtle : primary,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    }
+}
+
+const PhysicalDiskInfo* ProDashboardWindow::SelectedDisk() const {
+    for(const auto& disk:m_snapshot.physicalDisks)if(disk.id==m_selectedDiskId)return &disk;
+    return nullptr;
+}
+void ProDashboardWindow::ReconcileDiskSelection() {
+    if(!SelectedDisk()) {
+        m_selectedDiskId=m_snapshot.physicalDisks.empty() ? L"" : m_snapshot.physicalDisks.front().id;
+        m_diskMenuOpen=false;m_diskMenuFirst=0;m_diskMenuFocus=0;m_diskMenuHover=-1;
+    }
+    m_diskMenuFocus=std::clamp(m_diskMenuFocus,0,std::max(0,static_cast<int>(m_snapshot.physicalDisks.size())-1));
+    m_diskMenuFirst=std::clamp(m_diskMenuFirst,0,std::max(0,static_cast<int>(m_snapshot.physicalDisks.size())-5));
+}
+bool ProDashboardWindow::OnDiskKey(UINT key) {
+    if(!m_diskMenuOpen)return false;
+    const int count=static_cast<int>(m_snapshot.physicalDisks.size());
+    if(key==VK_ESCAPE) {m_diskMenuOpen=false;Render();return true;}
+    if(!count)return false;
+    if(key==VK_RETURN || key==VK_SPACE) {m_selectedDiskId=m_snapshot.physicalDisks[m_diskMenuFocus].id;m_diskMenuOpen=false;Render();return true;}
+    if(key==VK_UP)m_diskMenuFocus=std::max(0,m_diskMenuFocus-1);
+    else if(key==VK_DOWN)m_diskMenuFocus=std::min(count-1,m_diskMenuFocus+1);
+    else if(key==VK_HOME)m_diskMenuFocus=0;
+    else if(key==VK_END)m_diskMenuFocus=count-1;
+    else return false;
+    if(m_diskMenuFocus<m_diskMenuFirst)m_diskMenuFirst=m_diskMenuFocus;
+    if(m_diskMenuFocus>=m_diskMenuFirst+5)m_diskMenuFirst=m_diskMenuFocus-4;
+    Render();return true;
+}
+void ProDashboardWindow::DrawWhiteDiskDetails(ID2D1DCRenderTarget* rt) {
+    ReconcileDiskSelection();const auto* selected=SelectedDisk();
+    const auto& volumes=selected ? selected->volumes : m_snapshot.disks;
+    const auto& reads=selected ? selected->readHistory : m_snapshot.diskReadHistory;
+    const auto& writes=selected ? selected->writeHistory : m_snapshot.diskWriteHistory;
+    const bool throughputValid=selected ? selected->throughputValid : reads.Size()&&writes.Size()&&std::isfinite(reads.Back())&&std::isfinite(writes.Back());
+    const bool statisticsValid=selected ? selected->statisticsValid : m_snapshot.diskStatisticsValid;
+    const float activity=selected ? selected->activePercent : m_snapshot.diskActivePercent;
+    const float response=selected ? selected->responseTimeMs : m_snapshot.diskResponseTimeMs;
+    const float offset=m_settings.layoutMode==1 ? -40.f : 0.f;
+    auto* dw=m_renderer.GetDWriteFactory();
+    const auto primary=D2D1::ColorF(0x192739),muted=D2D1::ColorF(0x53657A);
+    const auto blue=D2D1::ColorF(0x2278A1),gold=D2D1::ColorF(0xA87517),border=D2D1::ColorF(0xDDE3EB);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    rt->CreateSolidColorBrush(D2D1::ColorF(0xF7F9FC),&brush);if(!brush) return;
+    const auto card=D2D1::RoundedRect(D2D1::RectF(11.5f,158.5f,348.5f,497.5f),9.5f,9.5f);
+    rt->FillRoundedRectangle(card,brush.Get());brush->SetColor(border);rt->DrawRoundedRectangle(card,brush.Get(),1);
+    auto text=[&](const wchar_t* value,D2D1_RECT_F box,float size,float lineHeight,DWRITE_FONT_WEIGHT weight,
+        D2D1_COLOR_F color,DWRITE_TEXT_ALIGNMENT align=DWRITE_TEXT_ALIGNMENT_LEADING) {
+        m_overviewVisuals.Text(rt,dw,value,box,size,lineHeight,weight,color,align);
+    };
+    auto shorten=[&](std::wstring value,float width) {
+        if(m_overviewVisuals.Measure(dw,value.c_str(),11,DWRITE_FONT_WEIGHT_BOLD)>width) {
+            do {value.pop_back();} while(!value.empty() && m_overviewVisuals.Measure(dw,(value+L"…").c_str(),11,DWRITE_FONT_WEIGHT_BOLD)>width);
+            value+=L"…";
+        }
+        return value;
+    };
+    text(L"磁盘",D2D1::RectF(24,163,338,183),13,24,DWRITE_FONT_WEIGHT_BOLD,primary);
+    wchar_t title[512];if(selected)swprintf_s(title,L"磁盘 %u · %s",selected->number,selected->model.c_str());else wcscpy_s(title,L"所有磁盘 · 汇总");
+    std::wstring name=title;while(!name.empty()&&m_overviewVisuals.Measure(dw,name.c_str(),13,DWRITE_FONT_WEIGHT_MEDIUM)>194) {if(name.back()==L'…')name.pop_back();if(!name.empty())name.pop_back();name+=L"…";if(name.size()==1)break;}
+    const float titleWidth=m_overviewVisuals.Measure(dw,name.c_str(),13,DWRITE_FONT_WEIGHT_MEDIUM);
+    text(name.c_str(),D2D1::RectF(24,187,218,207),13,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    if(selected)m_overviewVisuals.DrawIcon(rt,ProOverviewVisuals::DiskDisclosure,D2D1::RectF(28+titleWidth,191,40+titleWidth,203));
+    m_diskTriggerRect=selected ? D2D1::RectF(24,187+offset,44+titleWidth,207+offset) : D2D1::RectF(0,0,0,0);
+    wchar_t capacity[64];if(selected&&selected->capacityBytes) swprintf_s(capacity,L"%.3g %s · %s",selected->capacityBytes/(selected->capacityBytes>=1000000000000ULL ? 1000000000000.0 : 1000000000.0),selected->capacityBytes>=1000000000000ULL ? L"TB" : L"GB",selected->busType.c_str());else wcscpy_s(capacity,selected ? L"容量未提供" : L"设备未提供");
+    text(capacity,D2D1::RectF(240,188.5f,338,205.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    wchar_t value[96];
+    for(int i=0;i<2;++i) {
+        const float x=i ? 185.0f : 24.0f;const auto color=i ? gold : blue;
+        text(i ? L"↑ 写入" : L"↓ 读取",D2D1::RectF(x,211,x+153,227),11,17,DWRITE_FONT_WEIGHT_BOLD,color);
+        const auto raw=selected ? (i ? selected->writeBps : selected->readBps) : (i ? m_snapshot.diskWriteBps : m_snapshot.diskReadBps);
+        const bool giga=raw>=1000000000ULL;
+        if(throughputValid) swprintf_s(value,L"%.1f",raw/(giga ? 1000000000.0 : 1000000.0));else wcscpy_s(value,L"—");
+        float size=28;
+        while(size>18 && m_overviewVisuals.Measure(dw,value,size,DWRITE_FONT_WEIGHT_MEDIUM)>110) --size;
+        const float width=m_overviewVisuals.Measure(dw,value,size,DWRITE_FONT_WEIGHT_MEDIUM);
+        text(value,D2D1::RectF(x,220,x+119,262),size,42,DWRITE_FONT_WEIGHT_MEDIUM,color);
+        text(giga ? L"GB/s" : L"MB/s",D2D1::RectF(x+width+4,232.5f,x+153,249.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+    }
+    brush->SetColor(D2D1::ColorF(0xDDE3EB,.5f));
+    for(float y : {269.0f,293.0f,317.0f}) rt->FillRectangle(D2D1::RectF(24,y,338,y+.75f),brush.Get());
+    const size_t count=std::min(reads.Size(),writes.Size());float maximum=1;
+    const auto valid=[](float v){return std::isfinite(v) && v>=0;};
+    for(size_t i=0;i<count;++i) for(float v : {reads[reads.Size()-count+i],writes[writes.Size()-count+i]}) if(valid(v)) maximum=std::max(maximum,v*1.15f);
+    if(count>=2) for(int series=0;series<2;++series) {
+        const auto& history=series ? writes : reads;
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> line,area;
+        Microsoft::WRL::ComPtr<ID2D1GeometrySink> ls,as;
+        auto* factory=m_renderer.GetD2DFactory();
+        if(SUCCEEDED(factory->CreatePathGeometry(&line)) && SUCCEEDED(factory->CreatePathGeometry(&area)) &&
+            SUCCEEDED(line->Open(&ls)) && SUCCEEDED(area->Open(&as))) {
+            size_t i=0;
+            while(i<count) {
+                while(i<count && !valid(history[history.Size()-count+i])) ++i;
+                const size_t start=i;
+                while(i<count && valid(history[history.Size()-count+i])) ++i;
+                if(i-start<2) continue;
+                as->BeginFigure(D2D1::Point2F(338-314*static_cast<float>(count-1-start)/59,317),D2D1_FIGURE_BEGIN_FILLED);
+                for(size_t j=start;j<i;++j) {
+                    const auto point=D2D1::Point2F(338-314*static_cast<float>(count-1-j)/59,317-48*std::clamp(history[history.Size()-count+j]/maximum,0.0f,1.0f));
+                    if(j==start) ls->BeginFigure(point,D2D1_FIGURE_BEGIN_HOLLOW);else ls->AddLine(point);
+                    as->AddLine(point);
+                }
+                as->AddLine(D2D1::Point2F(338-314*static_cast<float>(count-i)/59,317));
+                as->EndFigure(D2D1_FIGURE_END_CLOSED);ls->EndFigure(D2D1_FIGURE_END_OPEN);
+            }
+            ls->Close();as->Close();
+            if(!series) {brush->SetColor(D2D1::ColorF(0x2278A1,.12f));rt->FillGeometry(area.Get(),brush.Get());}
+            brush->SetColor(series ? gold : blue);rt->DrawGeometry(line.Get(),brush.Get(),1.5f);
+        }
+    } else text(L"正在收集历史数据",D2D1::RectF(24,280,338,297),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    wcscpy_s(value,L"60 秒前");
+    text(value,D2D1::RectF(24,318,110,335),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    text(L"现在",D2D1::RectF(290,318,338,335),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    text(L"活动时间",D2D1::RectF(24,339,210,356),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+    if(statisticsValid && std::isfinite(activity) && activity>=0) swprintf_s(value,L"%.0f%%",std::clamp(activity,0.0f,100.0f));else wcscpy_s(value,L"—");
+    text(value,D2D1::RectF(260,339,338,356),11,17,DWRITE_FONT_WEIGHT_BOLD,primary,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    text(L"平均响应时间",D2D1::RectF(24,360,210,377),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+    if(statisticsValid && std::isfinite(response) && response>=0) swprintf_s(value,L"%.1f ms",response);else wcscpy_s(value,L"—");
+    text(value,D2D1::RectF(260,360,338,377),11,17,DWRITE_FONT_WEIGHT_BOLD,primary,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    brush->SetColor(border);rt->FillRectangle(D2D1::RectF(24,381,338,382),brush.Get());
+    text(L"卷容量",D2D1::RectF(24,386,210,406),13,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    text(L"已用 / 总量",D2D1::RectF(240,387.5f,338,404.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    for(size_t i=0;i<std::min<size_t>(2,volumes.size());++i) {
+        const auto& volume=volumes[i];const float y=410+33*static_cast<float>(i);
+        const uint64_t used=volume.totalBytes-std::min(volume.freeBytes,volume.totalBytes);
+        const bool capacityValid=volume.totalBytes>0 && volume.freeBytes<=volume.totalBytes;
+        if(capacityValid) swprintf_s(value,L"%.0f / %.0f GiB",used/1073741824.0,volume.totalBytes/1073741824.0);else wcscpy_s(value,L"— / — GiB");
+        const float valueWidth=std::max(158.f,m_overviewVisuals.Measure(dw,value,11,DWRITE_FONT_WEIGHT_BOLD));
+        const float nameRight=330-valueWidth;
+        const auto name=shorten(volume.label.empty() ? volume.drive : volume.label.find(L'(')!=std::wstring::npos ? volume.label : volume.label+L" ("+volume.drive+L")",nameRight-24);
+        text(name.c_str(),D2D1::RectF(24,y,nameRight,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+        text(value,D2D1::RectF(338-valueWidth,y,338,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,primary,DWRITE_TEXT_ALIGNMENT_TRAILING);
+        const float ratio=capacityValid ? static_cast<float>(static_cast<double>(used)/volume.totalBytes) : 0;
+        auto pill=[&](float left,float right,D2D1_COLOR_F color) {if(right>left) {brush->SetColor(color);rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left,y+21,right,y+29),4,4),brush.Get());}};
+        if(ratio<=0) pill(24,338,border);else if(ratio>=1) pill(24,338,blue);
+        else {pill(24,24+310*ratio,blue);pill(28+310*ratio,338,border);}
+    }
+    if(volumes.empty()) text(L"无已挂载卷或卷映射未提供",D2D1::RectF(24,410,338,427),11,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    if(selected && !selected->status.empty()) wcsncpy_s(value,selected->status.c_str(),_TRUNCATE);
+    else if(volumes.size()>2) swprintf_s(value,L"显示前 2 个卷，共 %zu 个",volumes.size());
+    else wcscpy_s(value,selected ? L"选择磁盘后，曲线与卷列表同步切换。" : L"物理设备未提供，当前显示汇总。");
+    text(value,D2D1::RectF(24,476,338,493),11,17,DWRITE_FONT_WEIGHT_BOLD,D2D1::ColorF(0x64748B));
+    m_diskOptionRects.clear();m_diskOptionIds.clear();
+    if(m_diskMenuOpen && selected) {
+        const int rows=std::min(5,static_cast<int>(m_snapshot.physicalDisks.size()));
+        const float height=10+rows*38.f+std::max(0,rows-1)*2.f;
+        m_diskMenuRect=D2D1::RectF(24,211+offset,280,211+offset+height);
+        m_overviewVisuals.Shadow(rt,D2D1::RectF(24,211,280,211+height),10,14,0,4,.12f,0x192739);
+        brush->SetColor(D2D1::ColorF(0xFFFFFF));const auto menu=D2D1::RoundedRect(D2D1::RectF(24.5f,211.5f,279.5f,210.5f+height),9.5f,9.5f);rt->FillRoundedRectangle(menu,brush.Get());brush->SetColor(border);rt->DrawRoundedRectangle(menu,brush.Get(),1);
+        for(int row=0;row<rows;++row) {
+            const int index=m_diskMenuFirst+row;const auto& disk=m_snapshot.physicalDisks[index];const float y=216+40.f*row;
+            const auto box=D2D1::RectF(29,y,277,y+38);m_diskOptionRects.push_back(D2D1::RectF(box.left,box.top+offset,box.right,box.bottom+offset));m_diskOptionIds.push_back(disk.id);
+            const bool chosen=disk.id==m_selectedDiskId;
+            if(chosen||index==m_diskMenuHover||index==m_diskMenuFocus) {brush->SetColor(D2D1::ColorF(0xEDF3FB));rt->FillRoundedRectangle(D2D1::RoundedRect(box,6,6),brush.Get());}
+            swprintf_s(title,L"磁盘 %u · %s",disk.number,disk.model.c_str());
+            auto truncate=[&](std::wstring s,float size,DWRITE_FONT_WEIGHT weight) {if(m_overviewVisuals.Measure(dw,s.c_str(),size,weight)>208) {while(!s.empty()&&m_overviewVisuals.Measure(dw,(s+L"…").c_str(),size,weight)>208)s.pop_back();s+=L"…";}return s;};
+            const auto option=truncate(title,12,DWRITE_FONT_WEIGHT_MEDIUM);text(option.c_str(),D2D1::RectF(37,y+3,245,y+21),12,18,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+            wchar_t size[48];if(disk.capacityBytes)swprintf_s(size,L"%.3g %s",disk.capacityBytes/(disk.capacityBytes>=1000000000000ULL ? 1000000000000.0 : 1000000000.0),disk.capacityBytes>=1000000000000ULL ? L"TB" : L"GB");else wcscpy_s(size,L"容量未知");
+            std::wstring description=std::wstring(size)+L" · "+disk.busType+L" · ";
+            if(disk.volumes.empty())description+=L"无已挂载卷";
+            for(size_t v=0;v<disk.volumes.size();++v)description+=(v ? L"、" : L"")+disk.volumes[v].drive.substr(0,2);
+            description=truncate(description,10,DWRITE_FONT_WEIGHT_NORMAL);text(description.c_str(),D2D1::RectF(37,y+21,245,y+35),10,14,DWRITE_FONT_WEIGHT_NORMAL,D2D1::ColorF(0x64748B));
+            if(chosen)m_overviewVisuals.DrawIcon(rt,ProOverviewVisuals::DiskSelected,D2D1::RectF(253,y+11,269,y+27));
+        }
+    }
+}
+
+void ProDashboardWindow::DrawWhiteMemoryDirect(ID2D1DCRenderTarget* rt) {
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    rt->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF),&brush);if(!brush) return;
+    m_overviewVisuals.Shadow(rt,D2D1::RectF(0,0,360,387),20,24,0,8,.07f);
+    const auto panel=D2D1::RoundedRect(D2D1::RectF(.5f,.5f,359.5f,386.5f),19.5f,19.5f);
+    rt->FillRoundedRectangle(panel,brush.Get());brush->SetColor(D2D1::ColorF(0xDDE3EB));rt->DrawRoundedRectangle(panel,brush.Get(),1);
+    m_overviewVisuals.Text(rt,m_renderer.GetDWriteFactory(),L"物理内存",D2D1::RectF(11,5,349,29),16,24,DWRITE_FONT_WEIGHT_BOLD,D2D1::ColorF(0x192739));
+    m_overviewLinkRect={};
+    D2D1_MATRIX_3X2_F original;rt->GetTransform(&original);
+    rt->SetTransform(D2D1::Matrix3x2F::Translation(0,-113)*original);
+    DrawWhiteMemoryDetails(rt,true);rt->SetTransform(original);
+}
+void ProDashboardWindow::DrawWhiteMemoryDetails(ID2D1DCRenderTarget* rt, bool standalone) {
+    auto* dw=m_renderer.GetDWriteFactory();
+    const auto primary=D2D1::ColorF(0x192739),muted=D2D1::ColorF(0x53657A);
+    const auto gold=D2D1::ColorF(0xA87517),blue=D2D1::ColorF(0x2278A1),border=D2D1::ColorF(0xDDE3EB);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    rt->CreateSolidColorBrush(D2D1::ColorF(0xF7F9FC),&brush);if(!brush) return;
+    const auto card=D2D1::RoundedRect(D2D1::RectF(11.5f,122.5f,348.5f,496.5f),9.5f,9.5f);
+    if(!standalone) {rt->FillRoundedRectangle(card,brush.Get());brush->SetColor(border);rt->DrawRoundedRectangle(card,brush.Get(),1);}
+    auto text=[&](const wchar_t* value,D2D1_RECT_F box,float size,float lineHeight,DWRITE_FONT_WEIGHT weight,
+        D2D1_COLOR_F color,DWRITE_TEXT_ALIGNMENT align=DWRITE_TEXT_ALIGNMENT_LEADING) {
+        m_overviewVisuals.Text(rt,dw,value,box,size,lineHeight,weight,color,align);
+    };
+    const bool available=m_snapshot.totalPhysMem>0;
+    const uint64_t total=m_snapshot.totalPhysMem;
+    const uint64_t used=std::min(total,m_snapshot.usedPhysMem);
+    const bool compositionValid=available && m_snapshot.memoryCompositionValid &&
+        m_snapshot.memInUseBytes<=total && m_snapshot.memStandbyCacheBytes<=total-m_snapshot.memInUseBytes &&
+        m_snapshot.memFreeBytes==total-m_snapshot.memInUseBytes-m_snapshot.memStandbyCacheBytes;
+    const uint64_t inUse=compositionValid ? m_snapshot.memInUseBytes : used;
+    wchar_t value[96];
+    if(!standalone) text(L"内存",D2D1::RectF(24,131,338,151),13,24,DWRITE_FONT_WEIGHT_BOLD,primary);
+    if(available) swprintf_s(value,L"%.1f",used/1073741824.0);else wcscpy_s(value,L"—");
+    float metricSize=28;
+    while(metricSize>18 && m_overviewVisuals.Measure(dw,value,metricSize,DWRITE_FONT_WEIGHT_MEDIUM)>110) --metricSize;
+    text(value,D2D1::RectF(24,150,219,192),metricSize,42,DWRITE_FONT_WEIGHT_MEDIUM,gold);
+    const float numberWidth=m_overviewVisuals.Measure(dw,value,metricSize,DWRITE_FONT_WEIGHT_MEDIUM);
+    if(available) swprintf_s(value,L"/ %.0f GiB",total/1073741824.0);else wcscpy_s(value,L"/ — GiB");
+    text(value,D2D1::RectF(28+numberWidth,162.5f,219,179.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+    if(available) swprintf_s(value,L"%.0f%%",100.0*static_cast<double>(used)/total);else wcscpy_s(value,L"—");
+    text(value,D2D1::RectF(275,161,338,181),13,20,DWRITE_FONT_WEIGHT_MEDIUM,primary,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    brush->SetColor(D2D1::ColorF(0xDDE3EB,.5f));
+    for(float y : {196.75f,215.44f,234.13f}) rt->FillRectangle(D2D1::RectF(24,y,338,y+.719f),brush.Get());
+    const auto& history=m_snapshot.memoryHistory;
+    if(history.Size()>=2 && available) {
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> line,area;
+        Microsoft::WRL::ComPtr<ID2D1GeometrySink> ls,as;
+        auto* factory=m_renderer.GetD2DFactory();
+        if(SUCCEEDED(factory->CreatePathGeometry(&line)) && SUCCEEDED(factory->CreatePathGeometry(&area)) &&
+            SUCCEEDED(line->Open(&ls)) && SUCCEEDED(area->Open(&as))) {
+            size_t i=0;
+            const auto valid=[](float v){return std::isfinite(v) && v>=0 && v<=100;};
+            while(i<history.Size()) {
+                while(i<history.Size() && !valid(history[i])) ++i;
+                const size_t start=i;
+                while(i<history.Size() && valid(history[i])) ++i;
+                if(i-start<2) continue;
+                as->BeginFigure(D2D1::Point2F(338-314*static_cast<float>(history.Size()-1-start)/59,234.13f),D2D1_FIGURE_BEGIN_FILLED);
+                for(size_t j=start;j<i;++j) {
+                    const auto point=D2D1::Point2F(338-314*static_cast<float>(history.Size()-1-j)/59,234.13f-37.38f*history[j]/100);
+                    if(j==start) ls->BeginFigure(point,D2D1_FIGURE_BEGIN_HOLLOW);else ls->AddLine(point);
+                    as->AddLine(point);
+                }
+                as->AddLine(D2D1::Point2F(338-314*static_cast<float>(history.Size()-i)/59,234.13f));
+                as->EndFigure(D2D1_FIGURE_END_CLOSED);ls->EndFigure(D2D1_FIGURE_END_OPEN);
+            }
+            ls->Close();as->Close();
+            brush->SetColor(D2D1::ColorF(0xA87517,.12f));rt->FillGeometry(area.Get(),brush.Get());
+            brush->SetColor(gold);rt->DrawGeometry(line.Get(),brush.Get(),1.5f);
+        }
+    } else text(available ? L"正在收集历史数据" : L"内存数据不可用",D2D1::RectF(24,204,338,221),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    wcscpy_s(value,L"60 秒前");
+    text(value,D2D1::RectF(24,238,110,255),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    text(L"现在",D2D1::RectF(290,238,338,255),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    text(L"物理内存组成",D2D1::RectF(24,259,225,279),13,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    if(available) swprintf_s(value,L"%.1f GiB",total/1073741824.0);else wcscpy_s(value,L"— GiB");
+    text(value,D2D1::RectF(230,260.5f,338,277.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    // Keep geometry within the physical total even if collector cache semantics overlap.
+    const uint64_t cache=compositionValid ? m_snapshot.memStandbyCacheBytes : 0;
+    const uint64_t free=compositionValid ? m_snapshot.memFreeBytes : total-inUse;
+    const uint64_t segments[]={inUse,cache,free};
+    const D2D1_COLOR_F colors[]={gold,blue,border};
+    int nonzero=0;for(auto bytes : segments) if(bytes) ++nonzero;
+    const float usable=314-4*std::max(0,nonzero-1);
+    float x=24;
+    for(int i=0;i<3;++i) if(total && segments[i]) {
+        const float width=usable*static_cast<float>(static_cast<double>(segments[i])/total);
+        brush->SetColor(colors[i]);rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x,283,x+width,291),4,4),brush.Get());
+        x+=width+4;
+    }
+    if(!available || !nonzero) {brush->SetColor(border);rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(24,283,338,291),4,4),brush.Get());}
+    const wchar_t* labels[]={L"● 正在使用",L"● 待机缓存",L"● 空闲",compositionValid ? L"可用  =  缓存 + 空闲" : L"可用（组成未提供）",L"已提交 / 提交限制"};
+    const uint64_t readings[]={inUse,cache,free,m_snapshot.availPhysMem};
+    for(int i=0;i<5;++i) {
+        const float y=295+i*21.0f;
+        text(labels[i],D2D1::RectF(24,y,198,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+        if(i==4) {
+            if(m_snapshot.memCommitLimitBytes) swprintf_s(value,L"%.1f / %.1f GiB",m_snapshot.memCommittedBytes/1073741824.0,m_snapshot.memCommitLimitBytes/1073741824.0);
+            else wcscpy_s(value,L"— / — GiB");
+        } else if(available && (compositionValid || (i!=1 && i!=2))) swprintf_s(value,L"%.1f GiB",readings[i]/1073741824.0);else wcscpy_s(value,L"— GiB");
+        text(value,D2D1::RectF(200,y,338,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,i==0 ? gold : i==1 ? blue : i==2 ? muted : primary,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    }
+    brush->SetColor(border);rt->FillRectangle(D2D1::RectF(24,400,338,401),brush.Get());
+    text(L"占用最高的进程",D2D1::RectF(24,405,270,425),13,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    text(L"内存",D2D1::RectF(290,406.5f,338,423.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    for(size_t i=0;i<std::min<size_t>(3,m_snapshot.topMemoryProcesses.size());++i) {
+        const auto& process=m_snapshot.topMemoryProcesses[i];const float y=429+21*static_cast<float>(i);
+        std::wstring name=process.name;
+        if(m_overviewVisuals.Measure(dw,name.c_str(),11,DWRITE_FONT_WEIGHT_BOLD)>244) {
+            do {name.pop_back();} while(!name.empty() && m_overviewVisuals.Measure(dw,(name+L"…").c_str(),11,DWRITE_FONT_WEIGHT_BOLD)>244);
+            name+=L"…";
+        }
+        swprintf_s(value,L"%.1f GiB",process.memBytes/1073741824.0);
+        const float valueWidth=std::max(62.f,m_overviewVisuals.Measure(dw,value,11,DWRITE_FONT_WEIGHT_BOLD));
+        const float nameRight=330-valueWidth;
+        while(!name.empty() && m_overviewVisuals.Measure(dw,name.c_str(),11,DWRITE_FONT_WEIGHT_BOLD)>nameRight-24) {name.pop_back();if(!name.empty() && name.back()==L'…') name.pop_back();name+=L"…";}
+        text(name.c_str(),D2D1::RectF(24,y,nameRight,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+        text(value,D2D1::RectF(338-valueWidth,y,338,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,primary,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    }
+    if(m_snapshot.topMemoryProcesses.empty()) text(L"暂无进程数据",D2D1::RectF(24,429,338,446),11,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+}
+
+void ProDashboardWindow::DrawWhiteGpuDetails(ID2D1DCRenderTarget* rt) {
+    auto* dw=m_renderer.GetDWriteFactory();
+    const auto primary=D2D1::ColorF(0x192739),muted=D2D1::ColorF(0x53657A);
+    const auto purple=D2D1::ColorF(0x8259C2),border=D2D1::ColorF(0xDDE3EB);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    rt->CreateSolidColorBrush(D2D1::ColorF(0xF7F9FC),&brush);
+    if(!brush) return;
+    const auto card=D2D1::RoundedRect(D2D1::RectF(11.5f,86.5f,348.5f,432.5f),9.5f,9.5f);
+    rt->FillRoundedRectangle(card,brush.Get());brush->SetColor(border);rt->DrawRoundedRectangle(card,brush.Get(),1);
+    auto text=[&](const wchar_t* value,D2D1_RECT_F box,float size,float lineHeight,DWRITE_FONT_WEIGHT weight,
+        D2D1_COLOR_F color,DWRITE_TEXT_ALIGNMENT align=DWRITE_TEXT_ALIGNMENT_LEADING) {
+        m_overviewVisuals.Text(rt,dw,value,box,size,lineHeight,weight,color,align);
+    };
+    auto ellipsize=[&](std::wstring value,float width) {
+        if(m_overviewVisuals.Measure(dw,value.c_str(),11,DWRITE_FONT_WEIGHT_BOLD)>width) {
+            do {value.pop_back();} while(!value.empty() && m_overviewVisuals.Measure(dw,(value+L"…").c_str(),11,DWRITE_FONT_WEIGHT_BOLD)>width);
+            value+=L"…";
+        }
+        return value;
+    };
+    text(L"GPU",D2D1::RectF(24,91,338,111),13,24,DWRITE_FONT_WEIGHT_BOLD,primary);
+    wchar_t value[96];
+    const bool validUsage=std::isfinite(m_snapshot.gpuUsagePercent) && m_snapshot.gpuUsagePercent>=0;
+    if(validUsage) swprintf_s(value,L"%.0f",std::clamp(m_snapshot.gpuUsagePercent,0.0f,100.0f));else wcscpy_s(value,L"—");
+    text(value,D2D1::RectF(24,110,94,152),28,42,DWRITE_FONT_WEIGHT_MEDIUM,purple);
+    const float numberWidth=m_overviewVisuals.Measure(dw,value,28,DWRITE_FONT_WEIGHT_MEDIUM);
+    if(validUsage) text(L"%",D2D1::RectF(28+numberWidth,122.5f,94,139.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+    if(std::isfinite(m_snapshot.gpuTempC) && m_snapshot.gpuTempC>0) {
+        const bool f=m_settings.tempUnit==1;
+        swprintf_s(value,f ? L"%.0f°F" : L"%.0f°C",f ? m_snapshot.gpuTempC*1.8f+32 : m_snapshot.gpuTempC);
+    } else wcscpy_s(value,m_settings.tempUnit==1 ? L"—°F" : L"—°C");
+    const float tempWidth=std::max(38.f,m_overviewVisuals.Measure(dw,value,13,DWRITE_FONT_WEIGHT_MEDIUM));
+    text(value,D2D1::RectF(102,121,102+tempWidth,141),13,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    const float modelLeft=110+tempWidth;
+    const auto model=ellipsize(m_snapshot.gpuName.empty() ? L"显卡型号不可用" : m_snapshot.gpuName,338-modelLeft);
+    text(model.c_str(),D2D1::RectF(modelLeft,122.5f,338,139.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,D2D1::ColorF(0x64748B),DWRITE_TEXT_ALIGNMENT_TRAILING);
+    brush->SetColor(D2D1::ColorF(0xDDE3EB,.5f));
+    for(float y : {153.8f,172.0f,193.0f}) rt->FillRectangle(D2D1::RectF(24,y,338,y+.7f),brush.Get());
+    const auto& history=m_snapshot.gpuHistory;
+    if(history.Size()>=2) {
+        float maximum=50;
+        for(size_t i=0;i<history.Size();++i) if(std::isfinite(history[i]) && history[i]>=0 && history[i]<=100) maximum=std::max(maximum,history[i]*1.1f);
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> line,area;
+        Microsoft::WRL::ComPtr<ID2D1GeometrySink> ls,as;
+        auto* factory=m_renderer.GetD2DFactory();
+        if(SUCCEEDED(factory->CreatePathGeometry(&line)) && SUCCEEDED(factory->CreatePathGeometry(&area)) &&
+            SUCCEEDED(line->Open(&ls)) && SUCCEEDED(area->Open(&as))) {
+            size_t i=0;
+            const auto valid=[](float v){return std::isfinite(v) && v>=0 && v<=100;};
+            while(i<history.Size()) {
+                while(i<history.Size() && !valid(history[i])) ++i;
+                const size_t start=i;
+                while(i<history.Size() && valid(history[i])) ++i;
+                if(i-start<2) continue;
+                const float x0=338-314*static_cast<float>(history.Size()-1-start)/59;
+                as->BeginFigure(D2D1::Point2F(x0,193),D2D1_FIGURE_BEGIN_FILLED);
+                for(size_t j=start;j<i;++j) {
+                    const auto point=D2D1::Point2F(338-314*static_cast<float>(history.Size()-1-j)/59,193-35*history[j]/maximum);
+                    if(j==start) ls->BeginFigure(point,D2D1_FIGURE_BEGIN_HOLLOW);else ls->AddLine(point);
+                    as->AddLine(point);
+                }
+                as->AddLine(D2D1::Point2F(338-314*static_cast<float>(history.Size()-i)/59,193));
+                as->EndFigure(D2D1_FIGURE_END_CLOSED);ls->EndFigure(D2D1_FIGURE_END_OPEN);
+            }
+            ls->Close();as->Close();
+            brush->SetColor(D2D1::ColorF(0x8259C2,.12f));rt->FillGeometry(area.Get(),brush.Get());
+            brush->SetColor(purple);rt->DrawGeometry(line.Get(),brush.Get(),1.5f);
+        }
+    } else text(L"正在收集历史数据",D2D1::RectF(24,161,338,178),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    wcscpy_s(value,L"60 秒前");
+    text(value,D2D1::RectF(24,194,110,211),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    text(L"现在",D2D1::RectF(290,194,338,211),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    text(L"显存使用",D2D1::RectF(24,215,140,232),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+    if(m_snapshot.gpuVramTotalBytes) swprintf_s(value,L"%.1f / %.1f GiB",m_snapshot.gpuVramUsedBytes/1073741824.0,m_snapshot.gpuVramTotalBytes/1073741824.0);
+    else wcscpy_s(value,L"— / — GiB");
+    text(value,D2D1::RectF(180,215,338,232),11,17,DWRITE_FONT_WEIGHT_BOLD,primary,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    const float ratio=m_snapshot.gpuVramTotalBytes ? static_cast<float>(std::clamp(static_cast<double>(m_snapshot.gpuVramUsedBytes)/m_snapshot.gpuVramTotalBytes,0.0,1.0)) : 0;
+    const float fill=310*ratio;
+    auto pill=[&](float left,float right,D2D1_COLOR_F color) {if(right>left) {brush->SetColor(color);rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left,236,right,244),4,4),brush.Get());}};
+    if(ratio<=0) pill(24,338,border);
+    else if(ratio>=1) pill(24,338,purple);
+    else {pill(24,24+fill,purple);pill(28+fill,338,border);}
+    if(std::isfinite(m_snapshot.gpuFreqGHz) && m_snapshot.gpuFreqGHz>0) swprintf_s(value,L"频率  %.2f GHz",m_snapshot.gpuFreqGHz);else wcscpy_s(value,L"频率  — GHz");
+    text(value,D2D1::RectF(24,248,190,265),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+    if(std::isfinite(m_snapshot.gpuPowerWatts) && m_snapshot.gpuPowerWatts>0) swprintf_s(value,L"功耗  %.0f W",m_snapshot.gpuPowerWatts);else wcscpy_s(value,L"功耗  — W");
+    text(value,D2D1::RectF(220,248,338,265),11,17,DWRITE_FONT_WEIGHT_BOLD,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    for(float y : {269.0f,361.0f}) {brush->SetColor(border);rt->FillRectangle(D2D1::RectF(24,y,338,y+1),brush.Get());}
+    text(L"引擎负载",D2D1::RectF(24,274,220,294),13,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    text(L"当前",D2D1::RectF(290,275.5f,338,292.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    const wchar_t* labels[]={L"3D 渲染",L"视频解码",L"视频编码"};
+    const float loads[]={m_snapshot.gpu3dLoadPercent,m_snapshot.gpuVideoDecodePercent,m_snapshot.gpuVideoEncodePercent};
+    for(int i=0;i<3;++i) {
+        const float y=298+21.0f*i;
+        text(labels[i],D2D1::RectF(24,y,220,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+        if(std::isfinite(loads[i]) && loads[i]>=0) swprintf_s(value,L"%.0f%%",std::clamp(loads[i],0.0f,100.0f));else wcscpy_s(value,L"—");
+        text(value,D2D1::RectF(290,y,338,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,i==0 ? purple : primary,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    }
+    text(L"占用最高的进程",D2D1::RectF(24,366,260,386),13,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+    text(L"GPU",D2D1::RectF(290,367.5f,338,384.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    for(size_t i=0;i<std::min<size_t>(2,m_snapshot.topGpuProcesses.size());++i) {
+        const auto& process=m_snapshot.topGpuProcesses[i];const float y=390+21*static_cast<float>(i);
+        const auto name=ellipsize(process.name,254);
+        text(name.c_str(),D2D1::RectF(24,y,278,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+        if(std::isfinite(process.cpuPercent) && process.cpuPercent>=0) swprintf_s(value,L"%.1f%%",std::clamp(process.cpuPercent,0.f,100.f));else wcscpy_s(value,L"—");
+        text(value,D2D1::RectF(286,y,338,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,primary,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    }
+    if(m_snapshot.topGpuProcesses.empty()) text(L"暂无进程数据",D2D1::RectF(24,390,338,407),11,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+}
+
+void ProDashboardWindow::DrawWhiteNetworkDirect(ID2D1DCRenderTarget* rt) {
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    rt->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF),&brush);if(!brush) return;
+    m_overviewVisuals.Shadow(rt,D2D1::RectF(0,0,360,301),20,24,0,8,.07f);
+    const auto panel=D2D1::RoundedRect(D2D1::RectF(.5f,.5f,359.5f,300.5f),19.5f,19.5f);
+    rt->FillRoundedRectangle(panel,brush.Get());brush->SetColor(D2D1::ColorF(0xDDE3EB));rt->DrawRoundedRectangle(panel,brush.Get(),1);
+    m_overviewVisuals.Text(rt,m_renderer.GetDWriteFactory(),L"网络吞吐",D2D1::RectF(11,5,349,29),16,24,DWRITE_FONT_WEIGHT_BOLD,D2D1::ColorF(0x192739));
+    m_overviewLinkRect={};
+    D2D1_MATRIX_3X2_F original;rt->GetTransform(&original);
+    rt->SetTransform(D2D1::Matrix3x2F::Translation(0,-182)*original);
+    DrawWhiteNetworkDetails(rt,true);rt->SetTransform(original);
+    m_netChartRect.top-=182;m_netChartRect.bottom-=182;
+}
+void ProDashboardWindow::DrawWhiteNetworkDetails(ID2D1DCRenderTarget* rt, bool standalone) {
+    auto* dw=m_renderer.GetDWriteFactory();
+    const auto primary=D2D1::ColorF(0x192739),muted=D2D1::ColorF(0x53657A);
+    const auto green=D2D1::ColorF(0x138873),blue=D2D1::ColorF(0x266BCE);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    rt->CreateSolidColorBrush(D2D1::ColorF(0xF7F9FC),&brush);
+    if (!brush) return;
+    const auto card=D2D1::RoundedRect(D2D1::RectF(11.5f,194.5f,348.5f,482.5f),9.5f,9.5f);
+    if(!standalone) {
+        rt->FillRoundedRectangle(card,brush.Get());
+        brush->SetColor(D2D1::ColorF(0xDDE3EB));rt->DrawRoundedRectangle(card,brush.Get(),1);
+    }
+    auto text=[&](const wchar_t* value,D2D1_RECT_F box,float size,float lineHeight,DWRITE_FONT_WEIGHT weight,
+        D2D1_COLOR_F color,DWRITE_TEXT_ALIGNMENT align=DWRITE_TEXT_ALIGNMENT_LEADING) {
+        m_overviewVisuals.Text(rt,dw,value,box,size,lineHeight,weight,color,align);
+    };
+    if(!standalone) text(L"网络",D2D1::RectF(24,199,338,219),13,24,DWRITE_FONT_WEIGHT_BOLD,primary);
+    wchar_t value[128];
+    for (int i=0;i<2;++i) {
+        const float x=i==0 ? 24.0f : 185.0f;
+        const auto color=i==0 ? green : blue;
+        text(i==0 ? L"↓ 下载" : L"↑ 上传",D2D1::RectF(x,223,x+100,239),11,17,DWRITE_FONT_WEIGHT_BOLD,color);
+        const auto raw=i==0 ? m_snapshot.downloadSpeedBps : m_snapshot.uploadSpeedBps;
+        const bool giga=raw>=1000000000ULL;
+        const double rate=raw/(giga ? 1000000000.0 : 1000000.0);
+        const bool sampled=m_snapshot.downloadHistory.Size()>0 && m_snapshot.uploadHistory.Size()>0;
+        if(sampled) swprintf_s(value,rate>=100 ? L"%.0f" : i==0 || rate>=10 ? L"%.1f" : L"%.2f",rate);else wcscpy_s(value,L"—");
+        float size=28;
+        while (size>18 && m_overviewVisuals.Measure(dw,value,size,DWRITE_FONT_WEIGHT_MEDIUM)>110) --size;
+        const float width=std::max(64.0f,m_overviewVisuals.Measure(dw,value,size,DWRITE_FONT_WEIGHT_MEDIUM));
+        text(value,D2D1::RectF(x,241,x+width+1,279),size,42,DWRITE_FONT_WEIGHT_MEDIUM,color);
+        text(giga ? L"GB/s" : L"MB/s",D2D1::RectF(x+width+4,251.5f,x+153,268.5f),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+    }
+    m_netChartRect=D2D1::RectF(24,285,338,365.36f);
+    brush->SetColor(D2D1::ColorF(0xDDE3EB,.5f));
+    for (float y : {291.56f,328.46f,365.36f})rt->FillRectangle(D2D1::RectF(24,y,338,y+.82f),brush.Get());
+    const auto& down=m_snapshot.downloadHistory;const auto& up=m_snapshot.uploadHistory;
+    // Both histories are collected together. Tail alignment also handles unequal startup lengths.
+    const size_t count=std::min(down.Size(),up.Size());
+    float peak=0;
+    bool hasPeak=false;
+    const auto valid=[](float v){return std::isfinite(v) && v>=0;};
+    for(size_t i=0;i<count;++i) {
+        for(float v : {down[down.Size()-count+i],up[up.Size()-count+i]}) if(valid(v)) {peak=std::max(peak,v);hasPeak=true;}
+    }
+    const float maximum=std::max(1000000.0f,peak*1.15f);
+    if (count>=2) {
+        for(int series=0;series<2;++series) {
+            const auto& history=series==0 ? down : up;
+            Microsoft::WRL::ComPtr<ID2D1PathGeometry> line,area;
+            Microsoft::WRL::ComPtr<ID2D1GeometrySink> lineSink,areaSink;
+            auto* factory=m_renderer.GetD2DFactory();
+            if(FAILED(factory->CreatePathGeometry(&line)) || FAILED(factory->CreatePathGeometry(&area)) ||
+                FAILED(line->Open(&lineSink)) || FAILED(area->Open(&areaSink)))continue;
+            size_t i=0;
+            while(i<count) {
+                while(i<count && !valid(history[history.Size()-count+i])) ++i;
+                const size_t start=i;
+                while(i<count && valid(history[history.Size()-count+i])) ++i;
+                if(i-start<2) continue;
+                areaSink->BeginFigure(D2D1::Point2F(338-314*static_cast<float>(count-1-start)/59,365.36f),D2D1_FIGURE_BEGIN_FILLED);
+                for(size_t j=start;j<i;++j) {
+                    const float x=338-314*static_cast<float>(count-1-j)/59;
+                    const float y=365.36f-74*std::clamp(history[history.Size()-count+j]/maximum,0.0f,1.0f);
+                    if(j==start)lineSink->BeginFigure(D2D1::Point2F(x,y),D2D1_FIGURE_BEGIN_HOLLOW);
+                    else lineSink->AddLine(D2D1::Point2F(x,y));
+                    areaSink->AddLine(D2D1::Point2F(x,y));
+                }
+                areaSink->AddLine(D2D1::Point2F(338-314*static_cast<float>(count-i)/59,365.36f));
+                areaSink->EndFigure(D2D1_FIGURE_END_CLOSED);lineSink->EndFigure(D2D1_FIGURE_END_OPEN);
+            }
+            lineSink->Close();areaSink->Close();
+            if(!series){brush->SetColor(D2D1::ColorF(0x138873,.12f));rt->FillGeometry(area.Get(),brush.Get());}
+            brush->SetColor(series==0 ? green : blue);rt->DrawGeometry(line.Get(),brush.Get(),1.5f);
+        }
+    } else text(L"正在收集历史数据",D2D1::RectF(24,310,338,340),11,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    wcscpy_s(value,L"60 秒前");
+    text(value,D2D1::RectF(24,368,120,385),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
+    text(L"现在",D2D1::RectF(300,368,338,385),10,17,DWRITE_FONT_WEIGHT_NORMAL,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    text(L"● 下载",D2D1::RectF(24,389,100,406),11,17,DWRITE_FONT_WEIGHT_BOLD,green);
+    text(L"● 上传",D2D1::RectF(142.5f,389,220,406),11,17,DWRITE_FONT_WEIGHT_BOLD,blue);
+    if(hasPeak) swprintf_s(value,L"峰值 %.1f MB/s",peak/1000000.0);else wcscpy_s(value,L"峰值 —");
+    text(value,D2D1::RectF(235,389,338,406),11,17,DWRITE_FONT_WEIGHT_BOLD,muted,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    brush->SetColor(D2D1::ColorF(0xDDE3EB));rt->FillRectangle(D2D1::RectF(24,410,338,411),brush.Get());
+    auto metadata=[&](const wchar_t* label,std::wstring content,float y) {
+        while(!content.empty() && m_overviewVisuals.Measure(dw,content.c_str(),11,DWRITE_FONT_WEIGHT_BOLD)>204) {
+            if(content.back()==L'…')content.pop_back();content.pop_back();content+=L"…";
+            if(content.size()==1)break;
+        }
+        text(label,D2D1::RectF(24,y,132,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+        text(content.c_str(),D2D1::RectF(134,y,338,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,primary,DWRITE_TEXT_ALIGNMENT_TRAILING);
+    };
+    metadata(L"网络接口",m_snapshot.netAdapterName.empty() ? L"—" : m_snapshot.netAdapterName,415);
+    metadata(L"本地地址",m_snapshot.localIpAddress.empty() ? L"—" : m_snapshot.localIpAddress,436);
+    auto bytes=[](uint64_t n) {
+        wchar_t out[32];
+        if(n>=1000000000ULL)swprintf_s(out,L"%.2f GB",n/1000000000.0);
+        else if(n>=1000000ULL)swprintf_s(out,L"%.0f MB",n/1000000.0);
+        else if(n>=1000ULL)swprintf_s(out,L"%.0f KB",n/1000.0);
+        else swprintf_s(out,L"%llu B",n);
+        return std::wstring(out);
+    };
+    metadata(L"本次下载 / 上传",count ? bytes(m_snapshot.sessionTotalInBytes)+L" / "+bytes(m_snapshot.sessionTotalOutBytes) : L"— / —",457);
+    if(m_netProbeActive && count>=2 && m_netProbeX>=338-314*static_cast<float>(count-1)/59) {
+        const float ratio=std::clamp((m_netProbeX-24)/314,0.0f,1.0f);
+        const size_t seconds=std::min(count-1,static_cast<size_t>(std::lround((1-ratio)*59)));
+        const size_t index=count-1-seconds;
+        const size_t secondsAgo=count-1-index;
+        const float cursor=338-314*static_cast<float>(secondsAgo)/59;
+        brush->SetColor(muted);rt->FillRectangle(D2D1::RectF(cursor,285,cursor+.863f,365.36f),brush.Get());
+        const std::time_t sample=static_cast<std::time_t>(m_netSampleUnixSeconds ? m_netSampleUnixSeconds : std::time(nullptr));
+        const std::time_t time=sample-static_cast<std::time_t>(secondsAgo);std::tm clock{};localtime_s(&clock,&time);
+        wchar_t stamp[128],rates[128];
+        swprintf_s(stamp,L"%zu 秒前  ·  %02d:%02d:%02d",secondsAgo,clock.tm_hour,clock.tm_min,clock.tm_sec);
+        wchar_t downRate[32],upRate[32];
+        const float d=down[down.Size()-count+index],u=up[up.Size()-count+index];
+        if(valid(d)) swprintf_s(downRate,L"%.1f",d/1000000.0);else wcscpy_s(downRate,L"—");
+        if(valid(u)) swprintf_s(upRate,L"%.1f",u/1000000.0);else wcscpy_s(upRate,L"—");
+        swprintf_s(rates,L"↓ %s   ↑ %s MB/s",downRate,upRate);
+        const float width=std::clamp(std::max(150.216f,std::max(m_overviewVisuals.Measure(dw,stamp,11,DWRITE_FONT_WEIGHT_BOLD),
+            m_overviewVisuals.Measure(dw,rates,11,DWRITE_FONT_WEIGHT_BOLD))+16),150.216f,314.0f);
+        const float x=std::clamp(cursor-width*.43f,24.0f,338-width);
+        brush->SetColor(D2D1::ColorF(0xEDF3FB));rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x,285,x+width,339),6,6),brush.Get());
+        text(stamp,D2D1::RectF(x+8,293,x+width-8,310),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
+        text(rates,D2D1::RectF(x+8,314,x+width-8,331),11,17,DWRITE_FONT_WEIGHT_BOLD,primary);
+    }
+}
+
+void ProDashboardWindow::DrawWhiteOverview(ID2D1DCRenderTarget* rt) {
+    using namespace ProOverviewLayout;
+    const bool cpuExpanded = m_expandedModule == Module_CPU;
+    const bool netExpanded = m_expandedModule == Module_Network;
+    const bool gpuExpanded = m_expandedModule == Module_GPU;
+    const bool memExpanded = m_expandedModule == Module_Memory;
+    const bool diskExpanded = m_expandedModule == Module_Disk;
+    const bool sensorExpanded = m_expandedModule == Module_Sensor;
+    const bool expanded = cpuExpanded || netExpanded || gpuExpanded || memExpanded || diskExpanded || sensorExpanded;
+    const bool compactCpu = cpuExpanded && m_settings.layoutMode==1;
+    const bool compactGpu = gpuExpanded && m_settings.layoutMode==1;
+    const bool compactMem = memExpanded && m_settings.layoutMode==1;
+    const bool compactNet = netExpanded && m_settings.layoutMode==1;
+    const bool compactDisk = diskExpanded && m_settings.layoutMode==1;
+    const bool compactSensor = sensorExpanded && m_settings.layoutMode==1;
+    const float coreExtra = cpuExpanded ? CpuCoreExtraHeight() : 0;
+    const float panelHeight = cpuExpanded ? m_dipHeight : netExpanded ? (compactNet ? 487 : 565) : gpuExpanded ? (compactGpu ? 545 : 623) : memExpanded ? (compactMem ? 573 : 651) : diskExpanded ? (compactDisk ? 538 : 616) : sensorExpanded ? (compactSensor ? 586 : 664) : Height;
+    const float headerOffset = expanded ? 4 : 0;
+    const float footerOffset = cpuExpanded ? m_dipHeight-284 : netExpanded ? (compactNet ? 203 : 281) : gpuExpanded ? (compactGpu ? 261 : 339) : memExpanded ? (compactMem ? 289 : 367) : diskExpanded ? (compactDisk ? 254 : 332) : sensorExpanded ? (compactSensor ? 302 : 380) : 0;
+    auto* dw = m_renderer.GetDWriteFactory();
+    const auto primary = D2D1::ColorF(0x192739);
+    const auto muted = D2D1::ColorF(0x53657A);
+    const auto cpu = D2D1::ColorF(0x266BCE);
+    const auto green = D2D1::ColorF(0x138873);
+    const auto border = D2D1::ColorF(0xDDE3EB);
+    const auto surface = D2D1::ColorF(0xF7F9FC);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    rt->CreateSolidColorBrush(primary, &brush);
+    if (!brush) return;
+    auto rounded = [&](D2D1_RECT_F box, float radius, D2D1_COLOR_F color) {
+        brush->SetColor(color); rt->FillRoundedRectangle(D2D1::RoundedRect(box, radius, radius), brush.Get());
+    };
+    auto text = [&](const wchar_t* value, D2D1_RECT_F box, float size, float lineHeight,
+        DWRITE_FONT_WEIGHT weight, D2D1_COLOR_F color, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING) {
+        m_overviewVisuals.Text(rt, dw, value, box, size, lineHeight, weight, color, align);
+    };
+    m_overviewVisuals.Shadow(rt, D2D1::RectF(0, 0, Width, panelHeight), 20, 24, 0, 8, .07f);
+    const auto panel = D2D1::RoundedRect(D2D1::RectF(.5f, .5f, Width-.5f, panelHeight-.5f), 19.5f, 19.5f);
+    brush->SetColor(D2D1::ColorF(0xFFFFFF)); rt->FillRoundedRectangle(panel, brush.Get());
+    brush->SetColor(border); rt->DrawRoundedRectangle(panel, brush.Get(), 1);
+    D2D1_MATRIX_3X2_F originalTransform; rt->GetTransform(&originalTransform);
+    rt->SetTransform(D2D1::Matrix3x2F::Translation(0, headerOffset) * originalTransform);
+    text(L"系统运行概览", D2D1::RectF(11, 7, 107, 31), 16, 24, DWRITE_FONT_WEIGHT_BOLD, primary);
+    rounded(D2D1::RectF(115, 9, 149, 29), 6, D2D1::ColorF(0xEDF3FB));
+    text(L"PRO", D2D1::RectF(119, 9, 149, 29), 13, 20, DWRITE_FONT_WEIGHT_MEDIUM, cpu);
+    m_pinButtonRect = D2D1::RectF(249, 5, 313, 33);
+    m_closeButtonRect = D2D1::RectF(321, 5, 349, 33);
+    m_settingsHeaderBtnRect = {}; // Only the visible footer gear is interactive.
+    m_settingsButtonRect = {};
+    rounded(m_pinButtonRect, 14, m_pinHover ? D2D1::ColorF(0xEDF3FB) : surface);
+    rounded(m_closeButtonRect, 14, m_closeHover ? D2D1::ColorF(0xEDF3FB) : surface);
+    m_overviewVisuals.DrawIcon(rt, ProOverviewVisuals::Pin, D2D1::RectF(260.5f, 12, 274.5f, 26));
+    text(m_isPinned ? L"取消" : L"固定", D2D1::RectF(279.5f, 11, 301.5f, 27), 11, 16, DWRITE_FONT_WEIGHT_MEDIUM, m_isPinned ? cpu : muted);
+    m_overviewVisuals.DrawIcon(rt, ProOverviewVisuals::Close, D2D1::RectF(328, 12, 342, 26));
+    const float headerDividerY = expanded ? 39 : 37;
+    brush->SetColor(border); rt->FillRectangle(D2D1::RectF(11, headerDividerY, 349, headerDividerY+1), brush.Get());
+    rt->SetTransform(originalTransform);
+    m_pinButtonRect.top += headerOffset; m_pinButtonRect.bottom += headerOffset;
+    m_closeButtonRect.top += headerOffset; m_closeButtonRect.bottom += headerOffset;
+    // Expanded CPU has no duplicate disclosure row. Its title remains a collapse target.
+    if(cpuExpanded) {
+        rt->PushAxisAlignedClip(D2D1::RectF(11,50,349,panelHeight-40),D2D1_ANTIALIAS_MODE_ALIASED);
+        rt->SetTransform(D2D1::Matrix3x2F::Translation(0,-m_cpuScroll)*originalTransform);
+    }
+    if (cpuExpanded) {
+        DrawWhiteCpuDetails(rt);
+        m_moduleRects[Module_CPU] = D2D1::RectF(11, 50, 349, 75);
+    } else if (netExpanded) {
+        if(compactNet) rt->SetTransform(D2D1::Matrix3x2F::Translation(0,-76)*originalTransform);
+        DrawWhiteNetworkDetails(rt);
+        rt->SetTransform(originalTransform);
+        if(compactNet) {m_netChartRect.top-=76;m_netChartRect.bottom-=76;}
+        m_moduleRects[Module_Network] = D2D1::RectF(11, compactNet ? 118 : 194, 349, compactNet ? 143 : 219);
+    } else if (gpuExpanded) {
+        if(compactGpu) rt->SetTransform(D2D1::Matrix3x2F::Translation(0,-2)*originalTransform);
+        DrawWhiteGpuDetails(rt);
+        rt->SetTransform(originalTransform);
+        m_moduleRects[Module_GPU] = D2D1::RectF(11, compactGpu ? 84 : 86, 349, compactGpu ? 109 : 111);
+    } else if (memExpanded) {
+        if(compactMem) rt->SetTransform(D2D1::Matrix3x2F::Translation(0,-38)*originalTransform);
+        DrawWhiteMemoryDetails(rt);
+        rt->SetTransform(originalTransform);
+        m_moduleRects[Module_Memory] = D2D1::RectF(11, compactMem ? 84 : 122, 349, compactMem ? 113 : 151);
+    } else if (diskExpanded) {
+        if(compactDisk) rt->SetTransform(D2D1::Matrix3x2F::Translation(0,-40)*originalTransform);
+        DrawWhiteDiskDetails(rt);
+        rt->SetTransform(originalTransform);
+        m_moduleRects[Module_Disk] = D2D1::RectF(11, compactDisk ? 118 : 158, 349, compactDisk ? 143 : 183);
+    } else if (sensorExpanded) {
+        if(compactSensor) rt->SetTransform(D2D1::Matrix3x2F::Translation(0,-78)*originalTransform);
+        DrawWhiteSensorDetails(rt);
+        rt->SetTransform(originalTransform);
+        m_moduleRects[Module_Sensor] = D2D1::RectF(11, compactSensor ? 152 : 230, 349, compactSensor ? 177 : 255);
+    }
+
+    const wchar_t* labels[] = {L"CPU", L"GPU", L"内存", L"磁盘", L"网络", L"传感器"};
+    const MetricHistory* histories[] = {&m_snapshot.cpuHistory, &m_snapshot.gpuHistory, &m_snapshot.memoryHistory,
+        &m_snapshot.diskHistory, &m_snapshot.downloadHistory, &m_snapshot.tempHistory};
+    const D2D1_COLOR_F colors[] = {cpu, D2D1::ColorF(0x8259C2), D2D1::ColorF(0xA87517), D2D1::ColorF(0x2278A1), green, D2D1::ColorF(0xBC5648)};
+    for (int i = cpuExpanded ? 1 : 0; i < Module_Count; ++i) {
+        if(compactGpu && i==Module_GPU) continue;
+        if(compactMem && i==Module_Memory) continue;
+        if(compactNet && i==Module_Network) continue;
+        if(compactDisk && i==Module_Disk) continue;
+        if(compactSensor && i==Module_Sensor) continue;
+        if(compactCpu || compactGpu || compactMem || compactNet || compactDisk || compactSensor) {
+            const int index=compactSensor ? i : compactDisk ? (i<3 ? i : i-4) : compactNet ? (i<4 ? i : 0) : compactMem ? (i<2 ? i : i-3) : compactGpu ? std::max(0,i-2) : i-1,row=index/2,column=index%2;
+            const float x=compactGpu && i==0 ? 11 : 11+column*172.f;
+            const float y=compactSensor ? 50+row*34.f : compactDisk ? (i<3 ? 50+row*34.f : 464) : compactNet ? (i<4 ? 50+row*34.f : 413) : compactMem ? (i<2 ? 50 : 465+row*34.f) : compactGpu ? (i==0 ? 50 : 437+row*34.f) : 417+row*34.f+coreExtra;
+            const float w=compactSensor ? (i==Module_Network ? 338.f : 166.f) : compactDisk ? (i==Module_Memory ? 338.f : 166.f) : compactNet || compactMem ? (i==Module_Sensor ? 338.f : 166.f) : compactGpu ? (i==0 ? 338.f : 166.f) : i==Module_Sensor ? 338.f : 166.f;
+            m_moduleRects[i]=D2D1::RectF(x,y,x+w,y+28);
+            rounded(m_moduleRects[i],14,m_hoveredModule==i ? D2D1::ColorF(0xEDF3FB) : surface);
+            brush->SetColor(colors[i]);rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x+9,y+14),1.5f,1.5f),brush.Get());
+            text(labels[i],D2D1::RectF(x+16,y+4,x+68,y+24),13,20,DWRITE_FONT_WEIGHT_MEDIUM,primary);
+            wchar_t val[64];
+            switch(i) {
+            case Module_CPU: if(std::isfinite(m_snapshot.cpuUsageTotal)) swprintf_s(val,L"%.0f%%",std::clamp(m_snapshot.cpuUsageTotal,0.f,100.f));else wcscpy_s(val,L"—");break;
+            case Module_GPU: swprintf_s(val,L"%.0f%%",m_snapshot.gpuUsagePercent);break;
+            case Module_Memory: if(m_snapshot.totalPhysMem) swprintf_s(val,L"%.1f / %.0f GiB",m_snapshot.usedPhysMem/1073741824.0,m_snapshot.totalPhysMem/1073741824.0);else wcscpy_s(val,L"—");break;
+            case Module_Disk: if(m_snapshot.diskReadHistory.Size()&&std::isfinite(m_snapshot.diskReadHistory.Back()))swprintf_s(val,L"读 %.0f MB/s",m_snapshot.diskReadBps/1000000.0);else wcscpy_s(val,L"读 —");break;
+            case Module_Network: swprintf_s(val,L"↓ %.1f MB/s",m_snapshot.downloadSpeedBps/1000000.0);break;
+            default: if(m_snapshot.cpuTempC>0) swprintf_s(val,m_settings.tempUnit==1 ? L"CPU %.0f°F" : L"CPU %.0f°C",m_settings.tempUnit==1 ? m_snapshot.cpuTempC*1.8f+32 : m_snapshot.cpuTempC);else wcscpy_s(val,L"CPU —");break;
+            }
+            const float available=w-68;
+            const float measured=m_overviewVisuals.Measure(dw,val,13,DWRITE_FONT_WEIGHT_MEDIUM);
+            text(val,D2D1::RectF(x+60,y+4,x+w-8,y+24),measured>available ? 11.f : 13.f,20,DWRITE_FONT_WEIGHT_MEDIUM,colors[i],DWRITE_TEXT_ALIGNMENT_TRAILING);
+            continue;
+        }
+        if (netExpanded && i == Module_Network) continue;
+        if (gpuExpanded && i == Module_GPU) continue;
+        if (memExpanded && i == Module_Memory) continue;
+        if (diskExpanded && i == Module_Disk) continue;
+        if (sensorExpanded && i == Module_Sensor) continue;
+        const float y = cpuExpanded ? 417 + (i-1)*36 + coreExtra : netExpanded ? (i==Module_Sensor ? 489.0f : 50+i*36.0f) : gpuExpanded ? (i==0 ? 50.0f : 439+(i-2)*36.0f) : memExpanded ? (i<2 ? 50+i*36.0f : 503+(i-3)*36.0f) : diskExpanded ? (i<3 ? 50+i*36.0f : 504+(i-4)*36.0f) : sensorExpanded ? 50+i*36.0f : RowY(i);
+        m_moduleRects[i] = D2D1::RectF(11, y, 349, y + 30);
+        if (m_hoveredModule == i) rounded(m_moduleRects[i], 10, surface);
+        text(labels[i], D2D1::RectF(LabelX, y+5, LabelX+48, y+25), 13, 20, DWRITE_FONT_WEIGHT_MEDIUM, primary);
+        if (histories[i]->Size() >= 2)
+            DrawMiniSparkline(rt, SparkX, y+8, 100, 14, *histories[i], 100, colors[i]);
+        wchar_t value[80]{};
+        switch (i) {
+        case Module_CPU: swprintf_s(value, L"%.0f%%", m_snapshot.cpuUsageTotal); break;
+        case Module_GPU: swprintf_s(value, L"%.0f%%", m_snapshot.gpuUsagePercent); break;
+        case Module_Memory:
+            if (m_snapshot.totalPhysMem) swprintf_s(value, L"%.1f / %.0f GiB", m_snapshot.usedPhysMem / 1073741824.0, m_snapshot.totalPhysMem / 1073741824.0);
+            else wcscpy_s(value, L"—"); break;
+        case Module_Disk: if(m_snapshot.diskReadHistory.Size()&&std::isfinite(m_snapshot.diskReadHistory.Back()))swprintf_s(value, expanded ? L"读 %.0f MB/s" : L"R %.0f MB/s", m_snapshot.diskReadBps / 1000000.0);else wcscpy_s(value,L"R —");break;
+        case Module_Network: swprintf_s(value, L"↓ %.1f MB/s", m_snapshot.downloadSpeedBps / 1000000.0); break;
+        case Module_Sensor:
+            if (m_snapshot.cpuTempC > 0) {
+                const bool fahrenheit = m_settings.tempUnit == 1;
+                swprintf_s(value, fahrenheit ? L"CPU %.0f°F" : L"CPU %.0f°C", fahrenheit ? m_snapshot.cpuTempC * 1.8f + 32 : m_snapshot.cpuTempC);
+            } else wcscpy_s(value, L"CPU —"); break;
+        }
+        if (i == Module_Disk && !expanded) {
+            // Exactly the R prefix is green; the rate stays primary text.
+            const float total = m_overviewVisuals.Measure(dw, value, 13, DWRITE_FONT_WEIGHT_MEDIUM);
+            const float prefix = m_overviewVisuals.Measure(dw, L"R ", 13, DWRITE_FONT_WEIGHT_MEDIUM);
+            const float x = std::max(ValueX, ValueRight - total);
+            text(L"R ", D2D1::RectF(x, y+5, x+prefix, y+25), 13, 20, DWRITE_FONT_WEIGHT_MEDIUM, green);
+            text(value+2, D2D1::RectF(x+prefix, y+5, ValueRight, y+25), 13, 20, DWRITE_FONT_WEIGHT_MEDIUM, primary);
+        } else text(value, D2D1::RectF(ValueX, y+5, ValueRight, y+25), 13, 20, DWRITE_FONT_WEIGHT_MEDIUM, primary, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        m_overviewVisuals.DrawIcon(rt, ProOverviewVisuals::Chevron, D2D1::RectF(ArrowX, y+7, ArrowX+16, y+23));
+    }
+    if(cpuExpanded) {
+        rt->SetTransform(originalTransform);rt->PopAxisAlignedClip();
+        for(auto& rect:m_moduleRects) {rect.top-=m_cpuScroll;rect.bottom-=m_cpuScroll;}
+        if(m_cpuScroll>0) m_moduleRects[Module_CPU]={};
+    }
+    rt->SetTransform(D2D1::Matrix3x2F::Translation(0, footerOffset) * originalTransform);
+    // CPU's divider is 597; its footer starts at 604 (6 DIP gap).
+    const float footerDividerY = expanded ? 244 : 246;
+    brush->SetColor(D2D1::ColorF(0xDDE3EB, .35f)); rt->FillRectangle(D2D1::RectF(11, footerDividerY, 349, footerDividerY+1), brush.Get());
+    m_overviewVisuals.DrawIcon(rt, ProOverviewVisuals::Clock, D2D1::RectF(11, 259, 23, 271));
+    const auto uptime = m_snapshot.uptimeSeconds;
+    wchar_t uptimeText[32];
+    swprintf_s(uptimeText, L"%02llu:%02llu:%02llu", uptime / 3600, (uptime / 60) % 60, uptime % 60);
+    text(uptimeText, D2D1::RectF(31, 256.5f, 79, 273.5f), 11, 17, DWRITE_FONT_WEIGHT_NORMAL, muted);
+    brush->SetColor(border); rt->FillRectangle(D2D1::RectF(83, 259, 84, 271), brush.Get());
+    wchar_t interval[24]; swprintf_s(interval, L"%d 秒刷新", m_settings.updateIntervalSec);
+    text(interval, D2D1::RectF(91, 256.5f, 151, 273.5f), 11, 17, DWRITE_FONT_WEIGHT_NORMAL, muted);
+    m_settingsFooterBtnRect = D2D1::RectF(321, 251, 349, 279);
+    m_overviewVisuals.Shadow(rt, D2D1::RectF(322, 252, 348, 278), 7, 5, -2, 4, .10f, 0);
+    rounded(m_settingsFooterBtnRect, 8, m_settingsHover ? D2D1::ColorF(0xEDF3FB) : surface);
+    m_overviewVisuals.DrawIcon(rt, (memExpanded || diskExpanded || sensorExpanded) ? ProOverviewVisuals::SettingsMemory : gpuExpanded ? ProOverviewVisuals::SettingsGpu : expanded ? ProOverviewVisuals::SettingsCpu : ProOverviewVisuals::Settings, D2D1::RectF(328, 258, 342, 272));
+    m_settingsFooterBtnRect.top += footerOffset; m_settingsFooterBtnRect.bottom += footerOffset;
+    rt->SetTransform(originalTransform);
+    if(cpuExpanded) DrawCpuCorePeek(rt);
+}
+
 void ProDashboardWindow::Render() {
     ID2D1DCRenderTarget* rt = m_renderer.BeginDraw();
     if (!rt) return;
@@ -4540,6 +5912,42 @@ void ProDashboardWindow::Render() {
 
     rt->SetTransform(D2D1::Matrix3x2F::Scale(m_dpiScale, m_dpiScale));
     rt->Clear(D2D1::ColorF(0, 0, 0, 0));
+    if(m_mode==Mode_Settings && m_settings.activeTab==0) {
+        rt->SetTransform(D2D1::Matrix3x2F::Translation(m_shadowApron,m_shadowApron)*D2D1::Matrix3x2F::Scale(m_dpiScale,m_dpiScale));
+        rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);DrawSettingsAppearance(rt);m_renderer.EndDraw();return;
+    }
+
+    if(IsPureWhite() && m_mode==Mode_DirectTemp) {
+        rt->SetTransform(D2D1::Matrix3x2F::Translation(m_shadowApron,m_shadowApron)*D2D1::Matrix3x2F::Scale(m_dpiScale,m_dpiScale));
+        rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        DrawWhiteTempDirect(rt);m_renderer.EndDraw();return;
+    }
+    if(IsPureWhite() && m_mode==Mode_DirectNetwork) {
+        rt->SetTransform(D2D1::Matrix3x2F::Translation(m_shadowApron,m_shadowApron)*D2D1::Matrix3x2F::Scale(m_dpiScale,m_dpiScale));
+        rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        DrawWhiteNetworkDirect(rt);m_renderer.EndDraw();return;
+    }
+    if(IsPureWhite() && m_mode==Mode_DirectMemory) {
+        rt->SetTransform(D2D1::Matrix3x2F::Translation(m_shadowApron,m_shadowApron)*D2D1::Matrix3x2F::Scale(m_dpiScale,m_dpiScale));
+        rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        DrawWhiteMemoryDirect(rt);m_renderer.EndDraw();return;
+    }
+    if(IsPureWhite() && m_mode==Mode_DirectCpu) {
+        rt->SetTransform(D2D1::Matrix3x2F::Translation(m_shadowApron,m_shadowApron)*D2D1::Matrix3x2F::Scale(m_dpiScale,m_dpiScale));
+        rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        DrawWhiteCpuDirect(rt);m_renderer.EndDraw();return;
+    }
+
+    if (IsWhiteOverview()) {
+        rt->SetTransform(D2D1::Matrix3x2F::Translation(m_shadowApron, m_shadowApron) *
+            D2D1::Matrix3x2F::Scale(m_dpiScale, m_dpiScale));
+        const auto textMode = rt->GetTextAntialiasMode();
+        rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        DrawWhiteOverview(rt);
+        rt->SetTextAntialiasMode(textMode);
+        m_renderer.EndDraw();
+        return;
+    }
 
     float W = m_dipWidth;
     float H = m_dipHeight;
@@ -4579,12 +5987,38 @@ void ProDashboardWindow::Render() {
     rt->FillRoundedRectangle(windowRect, m_pBgBrush);
     rt->DrawRoundedRectangle(windowRect, m_pBorderBrush, 1.2f);
 
-    float curY = 12.0f;
+    // Figma spec: 360 面板，内容区起点 (11, 5)
+    float curY = (m_mode == Mode_FullAccordion) ? 5.0f : 12.0f;
 
     DrawHeader(rt, curY, W);
 
-    for (int i = 0; i < Module_Count; ++i) {
-        DrawModuleCard(rt, static_cast<AccordionModule>(i), curY, W);
+    if (m_settings.layoutMode == 1) {
+        // ========== 紧凑胶囊 (Compact) 模式 ==========
+        if (m_expandedModule == Module_None) {
+            std::vector<AccordionModule> allMods = {
+                Module_CPU, Module_GPU, Module_Memory, Module_Disk, Module_Network, Module_Sensor
+            };
+            DrawCompactGrid(rt, allMods, curY, 11.0f, 338.0f);
+        } else {
+            std::vector<AccordionModule> beforeMods;
+            std::vector<AccordionModule> afterMods;
+            for (int i = 0; i < Module_Count; ++i) {
+                if (i < m_expandedModule) beforeMods.push_back(static_cast<AccordionModule>(i));
+                else if (i > m_expandedModule) afterMods.push_back(static_cast<AccordionModule>(i));
+            }
+            if (!beforeMods.empty()) {
+                DrawCompactGrid(rt, beforeMods, curY, 11.0f, 338.0f);
+            }
+            DrawModuleCard(rt, static_cast<AccordionModule>(m_expandedModule), curY, W);
+            if (!afterMods.empty()) {
+                DrawCompactGrid(rt, afterMods, curY, 11.0f, 338.0f);
+            }
+        }
+    } else {
+        // ========== 完整长条 (FullRows) 模式 ==========
+        for (int i = 0; i < Module_Count; ++i) {
+            DrawModuleCard(rt, static_cast<AccordionModule>(i), curY, W);
+        }
     }
 
     DrawFooter(rt, curY, W);
@@ -4593,6 +6027,23 @@ void ProDashboardWindow::Render() {
 }
 
 void ProDashboardWindow::OnClick(float x, float y) {
+    if(IsWhiteOverview() && m_expandedModule==Module_Disk) {
+        auto hit=[&](D2D1_RECT_F r){return r.right>r.left&&x>=r.left&&x<r.right&&y>=r.top&&y<r.bottom;};
+        if(m_diskMenuOpen) {
+            for(size_t i=0;i<m_diskOptionRects.size();++i)if(hit(m_diskOptionRects[i])) {m_selectedDiskId=m_diskOptionIds[i];m_diskMenuOpen=false;Render();return;}
+            m_diskMenuOpen=false;Render();return; // Outside click closes without activating the covered chart/row.
+        }
+        if(hit(m_diskTriggerRect) && SelectedDisk()) {
+            m_diskMenuOpen=true;m_diskMenuHover=-1;m_diskMenuFocus=0;
+            for(size_t i=0;i<m_snapshot.physicalDisks.size();++i)if(m_snapshot.physicalDisks[i].id==m_selectedDiskId)m_diskMenuFocus=static_cast<int>(i);
+            m_diskMenuFirst=std::max(0,m_diskMenuFocus-4);SetFocus(m_hwnd);Render();return;
+        }
+    }
+    const int core=HitCpuCore(x,y);
+    if(core>=0) {
+        m_focusedCpuCore=core;m_cpuKeyboardFocus=true;m_hoveredCpuCore=-1;
+        SetFocus(m_hwnd);Render();return;
+    }
     if (m_mode == Mode_Settings) {
         if (x >= m_settingsDoneRect.left && x <= m_settingsDoneRect.right &&
             y >= m_settingsDoneRect.top && y <= m_settingsDoneRect.bottom) {
@@ -4603,24 +6054,38 @@ void ProDashboardWindow::OnClick(float x, float y) {
             if (x >= m_tabRects[i].left && x <= m_tabRects[i].right &&
                 y >= m_tabRects[i].top && y <= m_tabRects[i].bottom) {
                 m_settings.activeTab = i;
+                m_sliderDragging=false;UpdateDimensionsAndPosition();
                 Render();
                 return;
             }
         }
         if (m_settings.activeTab == 0) {
-            for (int i = 0; i < 3; ++i) {
+            for (int i = 0; i < 4; ++i) {
                 if (x >= m_themeRects[i].left && x <= m_themeRects[i].right &&
                     y >= m_themeRects[i].top && y <= m_themeRects[i].bottom) {
                     m_settings.themeMode = i;
+                    UpdateDimensionsAndPosition();
+                    ReleaseBrushes();
+                    if (m_onSettingsChanged) m_onSettingsChanged(m_settings);
                     Render();
                     return;
                 }
             }
-            if (x >= m_sliderTrackRect.left && x <= m_sliderTrackRect.right &&
+            for (int i = 0; i < 2; ++i) {
+                if (x >= m_layoutOptionRects[i].left && x <= m_layoutOptionRects[i].right &&
+                    y >= m_layoutOptionRects[i].top && y <= m_layoutOptionRects[i].bottom) {
+                    m_settings.layoutMode = (1 - i); // 0: 紧凑胶囊 (layoutMode = 1), 1: 完整长条 (layoutMode = 0)
+                    UpdateDimensionsAndPosition();
+                    if (m_onSettingsChanged) m_onSettingsChanged(m_settings);
+                    Render();
+                    return;
+                }
+            }
+            if (m_settings.themeMode==0 && m_sliderTrackRect.right>m_sliderTrackRect.left && x >= m_sliderTrackRect.left && x <= m_sliderTrackRect.right &&
                 y >= m_sliderTrackRect.top && y <= m_sliderTrackRect.bottom) {
-                float startX = 17.0f;
-                float inW = 388.0f;
-                m_settings.glassOpacity = std::clamp((x - startX) / inW, 0.10f, 1.00f);
+                float startX = 11.0f;
+                float inW = 338.0f;
+                m_settings.glassOpacity = .1f+.9f*std::clamp((x-18)/324,0.f,1.f);
                 ReleaseBrushes();
                 if (m_onSettingsChanged) m_onSettingsChanged(m_settings);
                 Render();
@@ -4685,6 +6150,13 @@ void ProDashboardWindow::OnClick(float x, float y) {
         }
         if (x >= m_tempAlertRect.left && x <= m_tempAlertRect.right &&
             y >= m_tempAlertRect.top && y <= m_tempAlertRect.bottom) {
+            if(IsPureWhite()) {
+                const int value=m_settings.highTempAlert;
+                m_settings.highTempAlert=value==85 ? 90 : value==90 ? 95 : value==95 ? 0 : value==0 ? 75 : value==75 ? 80 : 85;
+                m_alertTempThreshold=m_settings.highTempAlert;
+                if(m_onSettingsChanged) m_onSettingsChanged(m_settings);
+                Render();return;
+            }
             if (m_alertTempThreshold == 85) m_alertTempThreshold = 90;
             else if (m_alertTempThreshold == 90) m_alertTempThreshold = 80;
             else m_alertTempThreshold = 85;
@@ -4731,6 +6203,7 @@ void ProDashboardWindow::OnClick(float x, float y) {
         return;
     }
 
+    if(IsWhiteCpu() && (y<50 || y>m_dipHeight-40)) return;
     for (int i = 0; i < Module_Count; ++i) {
         const auto& r = m_moduleRects[i];
         if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
@@ -4747,13 +6220,19 @@ void ProDashboardWindow::OnClick(float x, float y) {
 }
 
 void ProDashboardWindow::OnMouseMove(float x, float y) {
+    if(m_diskMenuOpen) {
+        int hovered=-1;for(size_t i=0;i<m_diskOptionRects.size();++i) {const auto& r=m_diskOptionRects[i];if(x>=r.left&&x<r.right&&y>=r.top&&y<r.bottom)hovered=m_diskMenuFirst+static_cast<int>(i);}
+        if(hovered!=m_diskMenuHover) {m_diskMenuHover=hovered;Render();}return;
+    }
     bool needRedraw = false;
+    const int core=HitCpuCore(x,y);
+    if(core!=m_hoveredCpuCore) {m_hoveredCpuCore=core;m_cpuKeyboardFocus=false;needRedraw=true;}
 
     if (m_mode == Mode_Settings) {
         if (m_sliderDragging) {
-            float startX = 17.0f;
-            float inW = 388.0f;
-            m_settings.glassOpacity = std::clamp((x - startX) / inW, 0.10f, 1.00f);
+            float startX = 11.0f;
+            float inW = 338.0f;
+            m_settings.glassOpacity = .1f+.9f*std::clamp((x-18)/324,0.f,1.f);
             ReleaseBrushes();
             if (m_onSettingsChanged) m_onSettingsChanged(m_settings);
             Render();
@@ -4834,6 +6313,7 @@ void ProDashboardWindow::OnMouseMove(float x, float y) {
 
     int hoverMod = -1;
     for (int i = 0; i < Module_Count; ++i) {
+        if(IsWhiteCpu() && (y<50 || y>m_dipHeight-40)) break;
         const auto& r = m_moduleRects[i];
         if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
             hoverMod = i;
@@ -4876,19 +6356,52 @@ LRESULT CALLBACK ProDashboardWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam,
     if (!pThis) return DefWindowProcW(hwnd, msg, wParam, lParam);
 
     switch (msg) {
+    case WM_DPICHANGED:
+        if(pThis->IsWhiteCpu()) {
+            pThis->m_dpiScale=HIWORD(wParam)/96.f;
+            pThis->m_hoveredCpuCore=-1;pThis->UpdateDimensionsAndPosition();pThis->Render();return 0;
+        }
+        break;
+    case WM_KEYDOWN:
+        if(pThis->OnDiskKey(static_cast<UINT>(wParam)))return 0;
+        if(wParam==VK_ESCAPE) {pThis->Hide();return 0;}
+        if(pThis->OnCpuKey(static_cast<UINT>(wParam),(GetKeyState(VK_SHIFT)&0x8000)!=0)) return 0;
+        break;
+    case WM_SETTINGCHANGE:
+    case WM_THEMECHANGED:
+        if(pThis->m_settings.themeMode==3) {pThis->ReleaseBrushes();pThis->UpdateDimensionsAndPosition();if(pThis->m_onSettingsChanged)pThis->m_onSettingsChanged(pThis->m_settings);pThis->Render();}
+        break;
+    case WM_MOUSEWHEEL:
+        if(pThis->m_diskMenuOpen) {pThis->OnDiskKey(GET_WHEEL_DELTA_WPARAM(wParam)>0 ? VK_UP : VK_DOWN);return 0;}
+        if(pThis->IsWhiteCpu()) {pThis->ScrollCpu(-GET_WHEEL_DELTA_WPARAM(wParam)*34.f/WHEEL_DELTA);return 0;}
+        break;
+    case WM_KILLFOCUS:
+        pThis->m_cpuKeyboardFocus=false;
+        if(pThis->IsWhiteCpu()) pThis->Render();
+        break;
+    case WM_NCHITTEST: {
+        if (pThis->m_shadowApron > 0) {
+            POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            ScreenToClient(hwnd, &point);
+            const float x = point.x / pThis->m_dpiScale - pThis->m_shadowApron;
+            const float y = point.y / pThis->m_dpiScale - pThis->m_shadowApron;
+            if (x < 0 || y < 0 || x >= pThis->m_dipWidth || y >= pThis->m_dipHeight) return HTTRANSPARENT;
+        }
+        return HTCLIENT;
+    }
     case WM_LBUTTONDOWN: {
         int px = GET_X_LPARAM(lParam);
         int py = GET_Y_LPARAM(lParam);
-        float dipX = px / pThis->m_dpiScale;
-        float dipY = py / pThis->m_dpiScale;
-        if (pThis->m_mode == Mode_Settings && pThis->m_settings.activeTab == 0 &&
+        float dipX = px / pThis->m_dpiScale - pThis->m_shadowApron;
+        float dipY = py / pThis->m_dpiScale - pThis->m_shadowApron;
+        if (pThis->m_mode == Mode_Settings && pThis->m_settings.activeTab == 0 && pThis->m_settings.themeMode==0 &&
             dipX >= pThis->m_sliderTrackRect.left && dipX <= pThis->m_sliderTrackRect.right &&
             dipY >= pThis->m_sliderTrackRect.top && dipY <= pThis->m_sliderTrackRect.bottom) {
             pThis->m_sliderDragging = true;
             SetCapture(hwnd);
             float startX = 17.0f;
             float inW = 388.0f;
-            pThis->m_settings.glassOpacity = std::clamp((dipX - startX) / inW, 0.10f, 1.00f);
+            pThis->m_settings.glassOpacity = .1f+.9f*std::clamp((dipX-18)/324,0.f,1.f);
             pThis->ReleaseBrushes();
             if (pThis->m_onSettingsChanged) pThis->m_onSettingsChanged(pThis->m_settings);
             pThis->Render();
@@ -4911,7 +6424,7 @@ LRESULT CALLBACK ProDashboardWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam,
     case WM_MOUSEMOVE: {
         int px = GET_X_LPARAM(lParam);
         int py = GET_Y_LPARAM(lParam);
-        pThis->OnMouseMove(px / pThis->m_dpiScale, py / pThis->m_dpiScale);
+        pThis->OnMouseMove(px / pThis->m_dpiScale - pThis->m_shadowApron, py / pThis->m_dpiScale - pThis->m_shadowApron);
 
         TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0 };
         TrackMouseEvent(&tme);
@@ -4919,12 +6432,16 @@ LRESULT CALLBACK ProDashboardWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam,
     }
 
     case WM_MOUSELEAVE:
+        pThis->m_hoveredCpuCore=-1;
         pThis->m_hoveredModule = -1;
+        pThis->m_diskMenuHover=-1;
         pThis->m_closeHover = false;
         pThis->m_pinHover = false;
         pThis->m_settingsHover = false;
         pThis->m_settingsDoneHover = false;
         pThis->m_netProbeActive = false;
+        pThis->m_tempProbeActive = false;
+        pThis->m_allSensorsHover = false;
         pThis->Render();
         return 0;
 

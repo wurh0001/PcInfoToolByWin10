@@ -16,6 +16,7 @@
 
 // 项目数据采集器的类声明和 MetricsSnapshot 类型。
 #include "MetricsCollector.h"
+#include "PhysicalDiskSampler.h"
 
 // 后台线程和线程同步。
 #include <thread>
@@ -28,6 +29,7 @@
 #include <chrono>
 // 限制指标范围时使用 std::clamp。
 #include <algorithm>
+#include <limits>
 #include <dxgi.h>
 #include <psapi.h>
 
@@ -179,6 +181,7 @@ struct MetricsCollector::Impl {
     std::mutex mutex;
 
     MetricsSnapshot snapshot;
+    PhysicalDiskSampler physicalDiskSampler;
     int coreCount = 0;
 
     // Per-core tracking via NtQuerySystemInformation
@@ -491,6 +494,7 @@ void MetricsCollector::Impl::UpdateMemory() {
 
     std::lock_guard<std::mutex> lock(mutex);
     if (hasPerf) {
+        snapshot.memoryCompositionValid = false; // SystemCache is not the standby list.
         uint64_t pageSize = pi.PageSize;
         uint64_t totalPhys = pi.PhysicalTotal * pageSize;
         uint64_t availPhys = pi.PhysicalAvailable * pageSize;
@@ -509,6 +513,7 @@ void MetricsCollector::Impl::UpdateMemory() {
 
         snapshot.memoryUsagePercent = (totalPhys > 0) ? std::clamp(static_cast<float>(inUse * 100.0 / totalPhys), 0.0f, 100.0f) : 52.0f;
     } else if (hasStatus) {
+        snapshot.memoryCompositionValid = false; // The cache/free split below is estimated.
         snapshot.totalPhysMem = memStatus.ullTotalPhys;
         snapshot.availPhysMem = memStatus.ullAvailPhys;
         snapshot.usedPhysMem = memStatus.ullTotalPhys - memStatus.ullAvailPhys;
@@ -682,25 +687,16 @@ void MetricsCollector::Impl::UpdateDisks() {
         }
     }
 
+    auto physical=physicalDiskSampler.Sample(disks);
+    uint64_t read=0,write=0;bool valid=!physical.empty();
+    for(const auto& disk:physical) {if(disk.throughputValid) {read+=disk.readBps;write+=disk.writeBps;}else valid=false;}
     std::lock_guard<std::mutex> lock(mutex);
-    snapshot.disks = std::move(disks);
-
-    if (snapshot.diskModelName.empty()) {
-        snapshot.diskModelName = L"Samsung 980 PRO";
-        snapshot.diskBusType = L"1 TB • NVMe";
-    }
-
-    // Dynamic read & write metrics matching Figma stats
-    float readMB = 42.0f + static_cast<float>(sin(GetTickCount64() * 0.001) * 3.5);
-    float writeMB = 8.7f + static_cast<float>(cos(GetTickCount64() * 0.0012) * 1.8);
-    snapshot.diskReadBps = static_cast<uint64_t>(readMB * 1024.0 * 1024.0);
-    snapshot.diskWriteBps = static_cast<uint64_t>(writeMB * 1024.0 * 1024.0);
-    snapshot.diskActivePercent = 12.0f;
-    snapshot.diskResponseTimeMs = 0.8f;
-
-    snapshot.diskHistory.Push(readMB);
-    snapshot.diskReadHistory.Push(readMB);
-    snapshot.diskWriteHistory.Push(writeMB);
+    snapshot.disks=std::move(disks);snapshot.physicalDisks=std::move(physical);
+    snapshot.diskModelName.clear();snapshot.diskBusType.clear();snapshot.diskStatisticsValid=false;
+    snapshot.diskReadBps=read;snapshot.diskWriteBps=write;
+    const float r=valid ? static_cast<float>(read/1000000.0) : std::numeric_limits<float>::quiet_NaN();
+    const float w=valid ? static_cast<float>(write/1000000.0) : std::numeric_limits<float>::quiet_NaN();
+    snapshot.diskHistory.Push(r);snapshot.diskReadHistory.Push(r);snapshot.diskWriteHistory.Push(w);
 }
 
 void MetricsCollector::Impl::UpdateNetworkInfo() {
@@ -847,4 +843,3 @@ void MetricsCollector::Impl::UpdateProcesses() {
         snapshot.topMemoryProcesses = std::move(topMem);
     }
 }
-

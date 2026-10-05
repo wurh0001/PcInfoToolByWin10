@@ -3,6 +3,7 @@
 #include "../ui/LayeredD2DRenderer.h"
 #include "../core/MetricsCollector.h"
 #include "../ui/CustomContextMenu.h"
+#include "ProOverviewVisuals.h"
 
 class ProDashboardWindow;
 class ProMiniBarTooltipWindow;
@@ -19,9 +20,12 @@ public:
     RECT GetWindowRectDip() const;
 
 private:
+    friend struct ProOverviewRenderTest;
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     void Render();
+    void DrawWhiteBar(ID2D1DCRenderTarget* rt);
     void OnTimer();
+    void ShowHoverPeek();
     void ToggleDashboard();
     void OnSegmentClick(int segmentIndex);
 
@@ -34,6 +38,8 @@ private:
 private:
     HWND m_hwnd = nullptr;
     LayeredD2DRenderer m_renderer;
+    ProOverviewVisuals m_overviewVisuals;
+    static constexpr float kShadowApron = 18;
     MetricsCollector m_collector;
     MetricsSnapshot m_snapshot;
     ProDashboardWindow* m_pDashboard = nullptr;

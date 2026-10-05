@@ -2,6 +2,7 @@
 #include <windows.h>
 #include "../ui/LayeredD2DRenderer.h"
 #include "../core/MetricsSnapshot.h"
+#include "ProOverviewVisuals.h"
 #include <vector>
 #include <functional>
 #include <algorithm>
@@ -34,8 +35,9 @@ public:
 
     struct SettingsState {
         int activeTab = 0;           // 0: 外观, 1: 监控, 2: 常规
-        int themeMode = 0;           // 0: 亮色玻璃, 1: 深色, 2: 跟随系统
-        float glassOpacity = 0.40f;  // 40%
+        int themeMode = 1;           // 0: 亮色玻璃, 1: 纯白 (默认), 2: 深色, 3: 跟随系统
+        int layoutMode = 0;          // 0: 完整长条 (FullRows), 1: 紧凑胶囊 (Compact)
+        float glassOpacity = 0.40f;  // 40% (背景透明度 60%)
         bool showCpu = true;
         bool showTemp = true;
         bool showRam = true;
@@ -61,6 +63,8 @@ public:
     bool IsVisible() const { return m_visible; }
     WindowMode GetMode() const { return m_mode; }
     const SettingsState& GetSettings() const { return m_settings; }
+    void SetAppearance(int theme,int layout,float opacity) {m_settings.themeMode=std::clamp(theme,0,3);m_settings.layoutMode=std::clamp(layout,0,1);m_settings.glassOpacity=std::clamp(opacity,.1f,1.f);}
+    void SetAppearanceSaveFailed(bool failed) {m_appearanceSaveFailed=failed;}
     AccordionModule GetExpandedModule() const { return static_cast<AccordionModule>(m_expandedModule); }
     HWND GetHwnd() const { return m_hwnd; }
 
@@ -70,25 +74,43 @@ public:
     void ExpandModule(AccordionModule mod);
     void SetOnSettingsChanged(std::function<void(const SettingsState&)> cb) { m_onSettingsChanged = cb; }
 
+    // 主题解析与判定
+    // themeMode: 0: 亮色玻璃, 1: 纯白, 2: 深色, 3: 跟随系统 (系统亮色解析为纯白，暗色解析为深色)
+    bool IsPureWhite() const {
+        if (m_settings.themeMode == 1) return true;
+        if (m_settings.themeMode == 3) {
+            return !SystemUsesDarkTheme();
+        }
+        return false;
+    }
+    static bool SystemUsesDarkTheme() {
+        DWORD light=1,size=sizeof(light);
+        return RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"AppsUseLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size)==ERROR_SUCCESS && light==0;
+    }
+
     // 分层材质透明度映射 (Material Layering Hierarchy)
     // t: 0.10f ~ 1.00f (默认 0.40f)
     float GetMiniBarBgAlpha() const {
+        if (IsPureWhite()) return 1.0f; // 纯白模式: 不透明 1.0
         if (m_settings.reduceTransparency) return 0.95f;
         float t = std::clamp(m_settings.glassOpacity, 0.10f, 1.00f);
         return std::clamp(0.20f + t * 0.60f, 0.25f, 0.85f); // 默认 40% 滑块对应 0.44f
     }
     float GetDashboardBgAlpha() const {
+        if (IsPureWhite()) return 1.0f; // 纯白模式: 不透明 1.0
         if (m_settings.reduceTransparency) return 0.96f;
         float t = std::clamp(m_settings.glassOpacity, 0.10f, 1.00f);
         return std::clamp(0.60f + t * 0.35f, 0.60f, 0.96f); // 默认 40% 滑块对应 0.74f (扎实半透)
     }
     float GetTooltipBgAlpha() const {
+        if (IsPureWhite()) return 1.0f; // 纯白模式: 不透明 1.0
         if (m_settings.reduceTransparency) return 0.95f;
         float t = std::clamp(m_settings.glassOpacity, 0.10f, 1.00f);
         return std::clamp(0.70f + t * 0.25f, 0.70f, 0.95f); // 默认 40% 滑块对应 0.80f (轻灵透澈)
     }
 
 private:
+    friend struct ProOverviewRenderTest;
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     void Render();
     void UpdateDimensionsAndPosition();
@@ -97,7 +119,46 @@ private:
 
     // Section Renderers
     void DrawHeader(ID2D1DCRenderTarget* rt, float& curY, float width);
+    void DrawWhiteOverview(ID2D1DCRenderTarget* rt);
+    void DrawWhiteCpuDetails(ID2D1DCRenderTarget* rt, bool standalone = false);
+    void DrawWhiteCpuDirect(ID2D1DCRenderTarget* rt);
+    void DrawWhiteTempDirect(ID2D1DCRenderTarget* rt);
+    void DrawSettingsAppearance(ID2D1DCRenderTarget* rt);
+    bool m_appearanceSaveFailed=false;
+    void DrawCpuCorePeek(ID2D1DCRenderTarget* rt);
+    bool IsWhiteCpu() const { return IsPureWhite() && (m_mode == Mode_DirectCpu || (m_mode == Mode_FullAccordion && m_expandedModule == Module_CPU)); }
+    int HitCpuCore(float x, float y) const;
+    bool OnCpuKey(UINT key, bool shift);
+    void ScrollCpu(float delta);
+    void DrawWhiteGpuDetails(ID2D1DCRenderTarget* rt);
+    void DrawWhiteMemoryDetails(ID2D1DCRenderTarget* rt, bool standalone = false);
+    void DrawWhiteMemoryDirect(ID2D1DCRenderTarget* rt);
+    void DrawWhiteDiskDetails(ID2D1DCRenderTarget* rt);
+    const PhysicalDiskInfo* SelectedDisk() const;
+    void ReconcileDiskSelection();
+    bool OnDiskKey(UINT key);
+    std::wstring m_selectedDiskId;
+    bool m_diskMenuOpen=false;
+    int m_diskMenuFocus=0, m_diskMenuFirst=0, m_diskMenuHover=-1;
+    D2D1_RECT_F m_diskTriggerRect{},m_diskMenuRect{};
+    std::vector<D2D1_RECT_F> m_diskOptionRects;
+    std::vector<std::wstring> m_diskOptionIds;
+    void DrawWhiteSensorDetails(ID2D1DCRenderTarget* rt);
+    void DrawWhiteNetworkDetails(ID2D1DCRenderTarget* rt, bool standalone = false);
+    void DrawWhiteNetworkDirect(ID2D1DCRenderTarget* rt);
+    float CpuCoreExtraHeight() const {
+        const size_t rows = (m_snapshot.cpuCoreUsage.size() + 7) / 8;
+        return rows > 2 ? static_cast<float>((rows - 2) * 34) : 0;
+    }
+    bool IsWhiteOverview() const {
+        return IsPureWhite() && m_mode == Mode_FullAccordion &&
+            (m_expandedModule >= Module_None && m_expandedModule < Module_Count) &&
+            (m_settings.layoutMode == 0 || (m_expandedModule >= Module_CPU && m_expandedModule < Module_Count)) &&
+            (!m_isPinned || (m_expandedModule >= Module_CPU && m_expandedModule < Module_Count));
+    }
     void DrawModuleCard(ID2D1DCRenderTarget* rt, AccordionModule mod, float& curY, float width);
+    void DrawCompactCapsule(ID2D1DCRenderTarget* rt, AccordionModule mod, float x, float y, float w, float h);
+    void DrawCompactGrid(ID2D1DCRenderTarget* rt, const std::vector<AccordionModule>& mods, float& curY, float contentX, float contentW);
     void DrawCpuExpanded(ID2D1DCRenderTarget* rt, float x, float y, float w, float h);
     void DrawGpuExpanded(ID2D1DCRenderTarget* rt, float x, float y, float w, float h);
     void DrawMemoryExpanded(ID2D1DCRenderTarget* rt, float x, float y, float w, float h);
@@ -126,17 +187,19 @@ private:
 private:
     HWND m_hwnd = nullptr;
     LayeredD2DRenderer m_renderer;
+    ProOverviewVisuals m_overviewVisuals;
+    float m_shadowApron = 0;
     MetricsSnapshot m_snapshot;
 
     bool m_visible = false;
     bool m_isPinned = false;
     int m_expandedModule = Module_None; // Default Overview state matching Figure 01
 
-    float m_dipWidth = 420.0f;
-    float m_dipHeight = 355.0f;
+    float m_dipWidth = 360.0f;
+    float m_dipHeight = 294.0f;
     float m_dpiScale = 1.0f;
-    int m_pixelWidth = 420;
-    int m_pixelHeight = 355;
+    int m_pixelWidth = 360;
+    int m_pixelHeight = 294;
 
     RECT m_anchorBarRectDip = { 0, 0, 0, 0 };
 
@@ -145,6 +208,11 @@ private:
 
     // Hover & Interactive Probe
     int m_hoveredModule = -1;
+    std::vector<D2D1_RECT_F> m_cpuCoreRects;
+    int m_hoveredCpuCore = -1, m_focusedCpuCore = -1;
+    bool m_cpuKeyboardFocus = false;
+    float m_cpuFullHeight = 0, m_cpuScroll = 0;
+    bool m_cpuPlacementValid = false, m_cpuAbove = false;
     bool m_pinHover = false;
     bool m_closeHover = false;
     bool m_settingsHover = false;
@@ -165,6 +233,7 @@ private:
     bool m_netProbeActive = false;
     float m_netProbeX = 0.0f;
     float m_netProbeY = 0.0f;
+    uint64_t m_netSampleUnixSeconds = 0;
     D2D1_RECT_F m_netChartRect = { 0, 0, 0, 0 };
 
     // Module row bounding boxes for hit testing
@@ -181,7 +250,8 @@ private:
     D2D1_RECT_F m_settingsDoneRect = { 0, 0, 0, 0 };
     bool m_settingsDoneHover = false;
     D2D1_RECT_F m_tabRects[3]{};
-    D2D1_RECT_F m_themeRects[3]{};
+    D2D1_RECT_F m_themeRects[4]{};
+    D2D1_RECT_F m_layoutOptionRects[2]{};
     D2D1_RECT_F m_sliderTrackRect = { 0, 0, 0, 0 };
     D2D1_RECT_F m_metricToggleRects[4]{};
     D2D1_RECT_F m_intervalRect = { 0, 0, 0, 0 };
