@@ -1,5 +1,7 @@
 # 🚀 PcInfoTool (极轻量 Windows 硬件悬浮状态监控套件)
 
+代码目录与维护规则见 [代码结构说明](docs/code-structure.md)，页面回归说明见 [渲染测试](tests/rendering/overview_render_test.md)。程序及测试工具统一输出到 `build/Release`。
+
 <div align="center">
 
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-blue?style=flat-square&logo=windows)
@@ -48,7 +50,7 @@
 
 ## 📊 极客级性能标杆
 
-内置测试套件 `test/test_performance.exe`（基于 Windows 物理内核 API `GetProcessTimes`、`GetProcessMemoryInfo` 高精度连续采样）：
+内置测试套件 `build/Release/test_performance.exe`（基于 Windows 物理内核 API `GetProcessTimes`、`GetProcessMemoryInfo` 高精度连续采样）：
 
 ```text
 ========================== 综合性能分析评估报告 ==========================
@@ -113,15 +115,14 @@ build.bat
 
 #### 手动 CMake 构建
 ```bash
-mkdir build && cd build
-cmake .. -G "Visual Studio 17 2022" -A x64
-cmake --build . --config Release
+cmake -S . -B build/cmake -G "Visual Studio 17 2022" -A x64
+cmake --build build/cmake --config Release
 ```
 
 ### 运行性能检测
 在 `test` 目录或项目根目录下执行：
 ```powershell
-.\test\test_performance.exe 10   # 运行 10 秒高精度采样评估
+.\build\Release\test_performance.exe 10   # 运行 10 秒高精度采样评估
 ```
 
 ---

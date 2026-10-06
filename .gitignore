@@ -45,7 +45,7 @@ CTestTestfile.cmake
 crash.log
 
 # Test-generated screenshots
-/test/*.png
+/tests/**/*.png
 
 # Keep only a lightweight Figma outline in version control.
 # Detailed handoffs, screenshots, exports and state snapshots stay local.
