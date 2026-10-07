@@ -9,6 +9,10 @@ set(PCINFO_CORE_SOURCES
     src/core/collectors/PhysicalDiskSampler.cpp
     src/core/collectors/PhysicalDiskSampler.h
     src/core/collectors/NativeGpuSensors.h
+    src/core/collectors/NativeAmdTemperature.h
+    src/core/collectors/NativeAmdTemperature.cpp
+    src/core/collectors/NativeLenovoSensors.h
+    src/core/collectors/NativeLenovoSensors.cpp
 )
 
 set(PCINFO_SHARED_UI_SOURCES
@@ -29,6 +33,8 @@ set(PCINFO_LITE_SOURCES
 )
 
 set(PCINFO_PRO_SOURCES
+    src/pro/windows/ProContextMenu.cpp
+    src/pro/windows/ProContextMenu.h
     src/pro/windows/ProMiniBarWindow.cpp
     src/pro/windows/ProMiniBarWindow.h
     src/pro/windows/ProMiniBarTooltipWindow.cpp

@@ -31,6 +31,7 @@ private:
 
 private:
     HWND m_hwnd = nullptr;
+    bool m_registeredRenderer = false;
     int m_width = 0;
     int m_height = 0;
 

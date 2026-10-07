@@ -8,7 +8,7 @@
 namespace {
 const GUID DiskInterface={0x53f56307,0xb6bf,0x11d0,{0x94,0xf2,0x00,0xa0,0xc9,0x1e,0xfb,0x8b}};
 struct Handle { HANDLE value=INVALID_HANDLE_VALUE; ~Handle(){if(value!=INVALID_HANDLE_VALUE)CloseHandle(value);} };
-Handle Open(const std::wstring& path) {return {CreateFileW(path.c_str(),0,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr)};}
+Handle Open(const std::wstring& path,DWORD access=0) {return {CreateFileW(path.c_str(),access,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr)};}
 std::wstring DescriptorString(const std::vector<unsigned char>& bytes,DWORD offset) {
     if(!offset || offset>=bytes.size())return {};
     const auto* s=reinterpret_cast<const char*>(bytes.data()+offset);
@@ -55,7 +55,19 @@ void PhysicalDiskSampler::RefreshInventory() {
         }
         if(device.info.model.empty())device.info.model=L"型号未提供";
         GET_LENGTH_INFORMATION length{};
-        if(DeviceIoControl(handle.value,IOCTL_DISK_GET_LENGTH_INFO,nullptr,0,&length,sizeof(length),&returned,nullptr)&&length.Length.QuadPart>0)device.info.capacityBytes=length.Length.QuadPart;
+        // GET_LENGTH_INFO requires FILE_READ_ACCESS. The metadata handle above
+        // intentionally has access=0 and cannot satisfy this IOCTL, even elevated.
+        auto capacityHandle=Open(device.path,GENERIC_READ);
+        if(capacityHandle.value!=INVALID_HANDLE_VALUE&&DeviceIoControl(capacityHandle.value,IOCTL_DISK_GET_LENGTH_INFO,nullptr,0,&length,sizeof(length),&returned,nullptr)&&returned>=sizeof(length)&&length.Length.QuadPart>0)
+            device.info.capacityBytes=length.Length.QuadPart;
+        if(!device.info.capacityBytes) {
+            // Geometry can expose the physical size without a read-access handle.
+            std::vector<unsigned char> geometryBytes(4096);
+            if(DeviceIoControl(handle.value,IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,nullptr,0,geometryBytes.data(),static_cast<DWORD>(geometryBytes.size()),&returned,nullptr)&&returned>=FIELD_OFFSET(DISK_GEOMETRY_EX,Data)) {
+                const auto* geometry=reinterpret_cast<const DISK_GEOMETRY_EX*>(geometryBytes.data());
+                if(geometry->DiskSize.QuadPart>0) device.info.capacityBytes=geometry->DiskSize.QuadPart;
+            }
+        }
         found.push_back(std::move(device));
     }
     SetupDiDestroyDeviceInfoList(set);

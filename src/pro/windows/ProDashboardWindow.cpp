@@ -3422,11 +3422,12 @@ void ProDashboardWindow::DrawSensorExpanded(ID2D1DCRenderTarget* rt, float x, fl
     // 14. CPU 风扇转速 (X=13, Y=349, 364 x 17)
     // ==========================================
     float f1Y = cardY + 349.0f;
-    int cpuFan = (m_snapshot.cpuFanRpm > 0) ? m_snapshot.cpuFanRpm : 1240;
+    int cpuFan = m_snapshot.cpuFanRpm;
     wchar_t fanBuf[32];
-    swprintf_s(fanBuf, L"%d,%03d RPM", cpuFan / 1000, cpuFan % 1000);
+    if(cpuFan<0)wcscpy_s(fanBuf,L"—");else swprintf_s(fanBuf, L"%d,%03d RPM", cpuFan / 1000, cpuFan % 1000);
     if (pFontRowLabel) {
-        rt->DrawTextW(L"CPU 风扇", 5, pFontRowLabel, D2D1::RectF(chartX, f1Y, chartX + 120.0f, f1Y + 17.0f), m_pTextSecondary);
+        const wchar_t* label=m_snapshot.laptopFanCount>0 ? L"风扇 1" : L"CPU 风扇";
+        rt->DrawTextW(label, static_cast<UINT32>(wcslen(label)), pFontRowLabel, D2D1::RectF(chartX, f1Y, chartX + 120.0f, f1Y + 17.0f), m_pTextSecondary);
     }
     if (pFontRowVal) {
         rt->DrawTextW(fanBuf, static_cast<UINT32>(wcslen(fanBuf)), pFontRowVal, D2D1::RectF(chartX + 120.0f, f1Y, chartX + chartW, f1Y + 17.0f), m_pTextPrimary);
@@ -3437,10 +3438,12 @@ void ProDashboardWindow::DrawSensorExpanded(ID2D1DCRenderTarget* rt, float x, fl
     // ==========================================
     float f2Y = cardY + 370.0f;
     if (pFontRowLabel) {
-        rt->DrawTextW(L"机箱风扇", 4, pFontRowLabel, D2D1::RectF(chartX, f2Y, chartX + 120.0f, f2Y + 17.0f), m_pTextSecondary);
+        const wchar_t* label=m_snapshot.laptopFanCount>0 ? L"风扇 2" : L"机箱风扇";
+        rt->DrawTextW(label, static_cast<UINT32>(wcslen(label)), pFontRowLabel, D2D1::RectF(chartX, f2Y, chartX + 120.0f, f2Y + 17.0f), m_pTextSecondary);
     }
     if (pFontGroupRight) {
-        rt->DrawTextW(L"—", 1, pFontGroupRight, D2D1::RectF(chartX + chartW - 40.0f, f2Y, chartX + chartW, f2Y + 17.0f), m_pTextMuted);
+        if(m_snapshot.caseFanRpm<0)wcscpy_s(fanBuf,L"—");else swprintf_s(fanBuf,L"%d RPM",m_snapshot.caseFanRpm);
+        rt->DrawTextW(fanBuf,static_cast<UINT32>(wcslen(fanBuf)),pFontGroupRight,D2D1::RectF(chartX+120,f2Y,chartX+chartW,f2Y+17),m_pTextMuted);
     }
 
     // ==========================================
@@ -5245,7 +5248,7 @@ void ProDashboardWindow::DrawWhiteTempDirect(ID2D1DCRenderTarget* rt) {
     if(std::isfinite(m_snapshot.cpuPowerWatts)&&m_snapshot.cpuPowerWatts>0) swprintf_s(power,L"%.0f W",m_snapshot.cpuPowerWatts);else wcscpy_s(power,L"—");
     if(std::isfinite(m_snapshot.cpuFreqGHz)&&m_snapshot.cpuFreqGHz>0) swprintf_s(freq,L"%.2f GHz",m_snapshot.cpuFreqGHz);else wcscpy_s(freq,L"—");
     if(m_snapshot.cpuFanRpm<0) wcscpy_s(fan,L"—");else if(m_snapshot.cpuFanRpm>=1000) swprintf_s(fan,L"%d,%03d RPM",m_snapshot.cpuFanRpm/1000,m_snapshot.cpuFanRpm%1000);else swprintf_s(fan,L"%d RPM",m_snapshot.cpuFanRpm);
-    const wchar_t* labels[]={L"最低 / 平均 / 最高",L"CPU 封装功耗",L"有效频率",L"CPU 风扇"};const wchar_t* values[]={stats,power,freq,fan};
+    const wchar_t* labels[]={L"最低 / 平均 / 最高",L"CPU 封装功耗",L"有效频率",m_snapshot.laptopFanCount>0 ? L"风扇 1" : L"CPU 风扇"};const wchar_t* values[]={stats,power,freq,fan};
     for(int i=0;i<4;++i) {const float y=178+21.f*i;text(labels[i],D2D1::RectF(11,y,180,y+17),12,18,DWRITE_FONT_WEIGHT_NORMAL,muted);text(values[i],D2D1::RectF(180,y,349,y+17),12,18,DWRITE_FONT_WEIGHT_MEDIUM,primary,DWRITE_TEXT_ALIGNMENT_TRAILING);}
     brush->SetColor(D2D1::ColorF(0xDDE3EB));rt->FillRectangle(D2D1::RectF(11,262,349,263),brush.Get());
     m_tempAlertRect=D2D1::RectF(11,267,155,284);m_allSensorsRect=D2D1::RectF(230,267,349,284);
@@ -5427,6 +5430,10 @@ void ProDashboardWindow::DrawWhiteSensorDetails(ID2D1DCRenderTarget* rt) {
     for(int i=0;i<2;++i) {
         const float y=575+i*21.0f;
         const wchar_t* label=i ? (fans[i]<0 ? L"机箱风扇（未提供读数）" : L"机箱风扇") : (fans[i]<0 ? L"CPU 风扇（未提供读数）" : L"CPU 风扇");
+        if(m_snapshot.laptopFanCount>0||m_snapshot.sensorPermissionRequired) {
+            label=i ? (fans[i]<0 ? L"风扇 2（未提供读数）" : L"风扇 2") : (fans[i]<0 ? L"风扇 1（未提供读数）" : L"风扇 1");
+            if(m_snapshot.sensorPermissionRequired)label=i ? L"风扇 2（需管理员权限）" : L"风扇 1（需管理员权限）";
+        }
         text(label,D2D1::RectF(24,y,242,y+17),11,17,DWRITE_FONT_WEIGHT_BOLD,muted);
         if(fans[i]>=1000) swprintf_s(value,L"%d,%03d RPM",fans[i]/1000,fans[i]%1000);
         else if(fans[i]>=0) swprintf_s(value,L"%d RPM",fans[i]);else wcscpy_s(value,L"—");

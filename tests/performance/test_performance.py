@@ -15,21 +15,35 @@ def main():
     print("         PcInfoTool 实时运行性能与资源开销专业测试          ")
     print("=" * 60)
 
-    target_name = "PcInfoTool.exe"
+    target_name = "PcInfoTool-Pro.exe"
     target_proc = None
+
+    # Check command-line args
+    if "--lite" in sys.argv:
+        target_name = "PcInfoTool-Lite.exe"
+    elif "--pro" in sys.argv:
+        target_name = "PcInfoTool-Pro.exe"
 
     for proc in psutil.process_iter(['pid', 'name']):
         try:
-            if proc.info['name'] and proc.info['name'].lower() == target_name.lower():
+            if proc.info['name'] and proc.info['name'].lower() in ["pcinfotool-pro.exe", "pcinfotool-lite.exe", "pcinfotool.exe"]:
+                if "--lite" in sys.argv and "lite" not in proc.info['name'].lower() and proc.info['name'].lower() != "pcinfotool.exe":
+                    continue
+                if "--pro" in sys.argv and "pro" not in proc.info['name'].lower():
+                    continue
                 target_proc = proc
+                target_name = proc.info['name']
                 break
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
 
     if not target_proc:
-        print("[提示] 未检测到正在运行的 PcInfoTool.exe 进程！")
+        print(f"[提示] 未检测到正在运行的目标进程，正在为您自动拉起: {target_name}...")
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        exe_path = os.path.abspath(os.path.join(base_dir, "..", "..", "build", "Release", "PcInfoTool.exe"))
+        exe_path = os.path.abspath(os.path.join(base_dir, "..", "..", "build", "Release", target_name))
+        if not os.path.exists(exe_path) and target_name == "PcInfoTool-Lite.exe":
+            target_name = "PcInfoTool.exe"
+            exe_path = os.path.abspath(os.path.join(base_dir, "..", "..", "build", "Release", target_name))
         if os.path.exists(exe_path):
             print(f"正在为您拉起: {exe_path}")
             os.system(f'start "" "{exe_path}"')
@@ -53,7 +67,7 @@ def main():
         return
 
     pid = target_proc.pid
-    print(f"[✔] 目标进程已锁定: PcInfoTool.exe (PID: {pid})")
+    print(f"[✔] 目标进程已锁定: {target_name} (PID: {pid})")
     print("\n正在进行 5 次高精度实时采样（间隔 1 秒），请稍候...")
     print("-" * 60)
 

@@ -1,6 +1,7 @@
 #include "pro/windows/ProMiniBarWindow.h"
 #include "pro/windows/ProDashboardWindow.h"
 #include "pro/windows/ProMiniBarTooltipWindow.h"
+#include "pro/windows/ProContextMenu.h"
 #include "ui/platform/DpiHelper.h"
 #include "ui/platform/AcrylicHelper.h"
 #include "core/config/ConfigManager.h"
@@ -940,16 +941,14 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
     case WM_RBUTTONUP: {
         POINT pt;
         GetCursorPos(&pt);
-        HMENU hMenu = CreatePopupMenu();
-        if (hMenu) {
-            AppendMenuW(hMenu, MF_STRING, 101, L"展开/收起系统运行概览");
-            AppendMenuW(hMenu, MF_STRING, 103, L"偏好设置...");
-            AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-            AppendMenuW(hMenu, MF_STRING, 102, L"退出 PcInfoTool-Pro");
-
-            SetForegroundWindow(hwnd);
-            int cmd = TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, 0, hwnd, NULL);
-            DestroyMenu(hMenu);
+        {
+            if(pThis->m_pTooltip)pThis->m_pTooltip->Hide();
+            const bool panelOpen=pThis->m_pDashboard&&pThis->m_pDashboard->IsVisible();
+            if(pThis->m_pDashboard)pThis->m_pDashboard->SetExternalMenuActive(true);
+            const auto appearance=pThis->m_pDashboard?pThis->m_pDashboard->GetSettings().themeMode:1;
+            ProContextMenu menu;
+            const int cmd=menu.Track(hwnd,pt,panelOpen,appearance==2||(appearance==3&&ProDashboardWindow::SystemUsesDarkTheme()));
+            if(pThis->m_pDashboard)pThis->m_pDashboard->SetExternalMenuActive(false);
 
             if (cmd == 101) {
                 pThis->ToggleDashboard();

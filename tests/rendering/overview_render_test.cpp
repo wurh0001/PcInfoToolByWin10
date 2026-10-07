@@ -207,6 +207,11 @@ struct ProOverviewRenderTest {
                 s.cpuFanRpm=s.caseFanRpm=-1;
             }
             if(cpuState.find(L"zero")!=std::wstring::npos) s.cpuFanRpm=s.caseFanRpm=0;
+            if(cpuState.find(L"lenovo")!=std::wstring::npos) {
+                s.laptopFanCount=2;s.cpuFanRpm=s.caseFanRpm=2300;s.cpuTempC=0;s.tempHistory={};s.cpuPowerWatts=0;
+                s.sensorPermissionRequired=cpuState.find(L"permission")!=std::wstring::npos;
+                if(s.sensorPermissionRequired){s.laptopFanCount=0;s.cpuFanRpm=s.caseFanRpm=-1;}
+            }
             if(cpuState.rfind(L"temperature",0)==0) {
                 panel.m_mode=ProDashboardWindow::Mode_DirectTemp;s.cpuBrand=L"AMD Ryzen 7 7700";
                 if(cpuState.find(L"invalid")==std::wstring::npos && cpuState.find(L"wide")==std::wstring::npos) s.cpuPowerWatts=sensorMode==2 ? 0 : 32;
@@ -650,11 +655,18 @@ int wmain(int argc, wchar_t** argv) {
         if(mode==L"general-native"){ProOverviewRenderTest::NativeGeneral();CoUninitialize();return 0;}
         if(mode==L"placement-native"){ProOverviewRenderTest::PlacementRules();CoUninitialize();return 0;}
         if(mode==L"motion-native"){ProOverviewRenderTest::MotionRules();CoUninitialize();return 0;}
-        if(mode==L"state-live") {
+        if(mode==L"state-live"||mode==L"lenovo-live") {
             MetricsCollector collector;collector.Start();std::this_thread::sleep_for(std::chrono::seconds(2));auto s=collector.GetLatestSnapshot();collector.Stop();
-            Check(s.temperatureStatus.state==MetricDataState::Unsupported&&s.tempHistory.Empty()&&s.cpuTempC==0&&s.cpuPowerWatts==0&&s.cpuFanRpm==-1,"collector still synthesizes CPU sensor values");
-            std::printf("Native sensors: GPU %.1f C, %.2f W, %.3f GHz; disk %.1f C; CPU/fan unsupported\n",s.gpuTempC,s.gpuPowerWatts,s.gpuFreqGHz,s.ssdTempC);
-            std::puts("PASS live sensor state: unsupported, no fabricated temperature/power/fan/history");CoUninitialize();return 0;
+            Check(s.cpuPowerWatts==0,"collector synthesizes CPU power");
+            if(s.cpuTempC==0)Check(s.tempHistory.Empty(),"invalid temperature creates history");
+            std::printf("Native sensors: GPU %.1f C, %.2f W; disk %.1f C; CPU %.1f C; fans %d: %d / %d RPM; permission required %d\n",s.gpuTempC,s.gpuPowerWatts,s.ssdTempC,s.cpuTempC,s.laptopFanCount,s.cpuFanRpm,s.caseFanRpm,s.sensorPermissionRequired);
+            if(mode==L"lenovo-live") {
+                std::filesystem::create_directories(std::filesystem::path(argv[2]).parent_path());
+                FILE* report=nullptr;_wfopen_s(&report,argv[2],L"w");Check(report!=nullptr,"cannot open native probe report");
+                std::fprintf(report,"CPU %.1f C\nGPU %.1f C\nFans %d\nFan1 %d RPM\nFan2 %d RPM\nPermission required %d\nHRESULT %08x\n",s.cpuTempC,s.gpuTempC,s.laptopFanCount,s.cpuFanRpm,s.caseFanRpm,s.sensorPermissionRequired,static_cast<unsigned>(s.sensorProviderStatus));std::fclose(report);
+                Check(s.laptopFanCount>0&&s.cpuFanRpm>=0,"Lenovo native fan query failed");
+            }
+            std::puts("PASS live sensor state: real provider values only");CoUninitialize();return 0;
         }
         if(mode==L"disk-live") {
             MetricsCollector collector;collector.Start();std::this_thread::sleep_for(std::chrono::seconds(4));const auto snapshot=collector.GetLatestSnapshot();collector.Stop();

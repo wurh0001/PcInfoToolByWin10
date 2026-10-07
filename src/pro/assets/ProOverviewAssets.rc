@@ -15,3 +15,6 @@
 214 RCDATA "settings-grip.png"
 215 RCDATA "settings-toggle-on.png"
 216 RCDATA "settings-toggle-off.png"
+217 RCDATA "menu-overview.png"
+218 RCDATA "menu-settings.png"
+219 RCDATA "menu-exit.png"

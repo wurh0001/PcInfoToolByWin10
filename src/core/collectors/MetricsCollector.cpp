@@ -18,6 +18,8 @@
 #include "core/collectors/MetricsCollector.h"
 #include "core/collectors/PhysicalDiskSampler.h"
 #include "core/collectors/NativeGpuSensors.h"
+#include "core/collectors/NativeLenovoSensors.h"
+#include "core/collectors/NativeAmdTemperature.h"
 
 // 后台线程和线程同步。
 #include <thread>
@@ -313,6 +315,8 @@ MetricsSnapshot MetricsCollector::GetLatestSnapshot() {
 
 // 后台线程循环：依次采集 CPU、内存、GPU、网络和磁盘信息。
 void MetricsCollector::Impl::WorkerLoop() {
+    NativeLenovoSensors lenovoSensors; // COM resources are owned by this worker thread.
+    NativeAmdTemperature amdTemperature;
     while (running) {
         UpdateCpu();
         UpdateMemory();
@@ -323,11 +327,26 @@ void MetricsCollector::Impl::WorkerLoop() {
         UpdateDisks();
         // Independent of PDH initialization and of the currently visible detail page.
         const auto sensors=gpuSensors.Sample(snapshot.gpuName);
+        const auto laptop=lenovoSensors.Sample();
+        const auto amd=amdTemperature.Sample();
         {
             std::lock_guard<std::mutex> lock(mutex);
             snapshot.gpuTempC=sensors.temperature;snapshot.gpuPowerWatts=sensors.watts;snapshot.gpuFreqGHz=sensors.ghz;
             snapshot.gpuVramUsedBytes=sensors.used;
             snapshot.gpuVramTotalBytes=sensors.memoryValid ? sensors.total : 0;
+            snapshot.laptopFanCount=laptop.fanCount;
+            snapshot.cpuFanRpm=laptop.fan1;snapshot.caseFanRpm=laptop.fan2;
+            snapshot.sensorPermissionRequired=laptop.status==WBEM_E_ACCESS_DENIED||laptop.status==E_ACCESSDENIED;
+            snapshot.sensorProviderStatus=laptop.status;
+            if(amd.temperature>0) {
+                snapshot.temperatureStatus.Record(amd.temperature,snapshot.cpuTempC,snapshot.tempHistory,amd.sampleTime);
+            } else if(laptop.cpuTemperature>0) {
+                snapshot.temperatureStatus.Record(laptop.cpuTemperature,snapshot.cpuTempC,snapshot.tempHistory,laptop.sampleTime);
+            } else if(snapshot.temperatureStatus.lastValidMs) {
+                snapshot.temperatureStatus.Record(NAN,snapshot.cpuTempC,snapshot.tempHistory,laptop.sampleTime);
+            } else {
+                snapshot.temperatureStatus.state=MetricDataState::Unsupported;snapshot.cpuTempC=0;
+            }
         }
 
         if (++processCycleCount >= 2) {
@@ -475,11 +494,7 @@ void MetricsCollector::Impl::UpdateCpu() {
     snapshot.cpuHistory.Push(total);
     snapshot.cpuFreqGHz = freqGHz;
     // These sensors require a real hardware provider; CPU load is not temperature.
-    snapshot.temperatureStatus.state = MetricDataState::Unsupported;
-    snapshot.cpuTempC = 0;
     snapshot.cpuPowerWatts = 0;
-    snapshot.cpuFanRpm = -1;
-    snapshot.caseFanRpm = -1;
     snapshot.uptimeSeconds = GetTickCount64() / 1000;
 }
 

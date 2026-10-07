@@ -143,6 +143,9 @@ struct MetricsSnapshot {
     float cpuPowerWatts = 0.0f;
     int cpuFanRpm = -1;
     int caseFanRpm = -1;           // -1 means unavailable (—)
+    int laptopFanCount = 0;        // OEM enumeration; does not imply CPU/GPU ownership.
+    bool sensorPermissionRequired = false;
+    int32_t sensorProviderStatus = 0; // Native HRESULT, for diagnostics only.
     float tempMinC = 0.0f;
     float tempMaxC = 0.0f;
 

@@ -53,6 +53,8 @@ crash.log
 !/design/Figma设计大纲.md
 
 # Temporary and editor files
+__pycache__/
+*.py[cod]
 *.tmp
 *.temp
 *.bak

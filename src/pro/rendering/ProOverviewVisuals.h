@@ -18,7 +18,7 @@ constexpr float ValueRight = 312.3333f, ArrowX = 321;
 // Pro-local resources: no changes to Lite's existing fonts or renderer.
 class ProOverviewVisuals {
 public:
-    enum Icon { Thermometer = 201, Expand, Pin, Close, Chevron, Clock, Settings, SettingsCpu, SettingsGpu, SettingsMemory, DiskDisclosure, DiskSelected, SettingsDisclosure, SettingsGrip, SettingsToggleOn, SettingsToggleOff };
+    enum Icon { Thermometer = 201, Expand, Pin, Close, Chevron, Clock, Settings, SettingsCpu, SettingsGpu, SettingsMemory, DiskDisclosure, DiskSelected, SettingsDisclosure, SettingsGrip, SettingsToggleOn, SettingsToggleOff, MenuOverview, MenuSettings, MenuExit };
     void Text(ID2D1RenderTarget* rt, IDWriteFactory* factory, const wchar_t* value,
         D2D1_RECT_F box, float size, float lineHeight, DWRITE_FONT_WEIGHT weight,
         D2D1_COLOR_F color, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING);

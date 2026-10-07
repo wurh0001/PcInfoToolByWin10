@@ -1,3 +1,9 @@
+﻿param(
+    [switch]$Pro,
+    [switch]$Lite,
+    [int]$Samples = 5
+)
+
 # ==============================================================================
 # PcInfoTool 性能监控与资源开销测试脚本
 # ==============================================================================
@@ -7,19 +13,50 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "          PcInfoTool 实时运行性能与资源开销检测           " -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host ""
 
-$proc = Get-Process -Name "PcInfoTool" -ErrorAction SilentlyContinue
+$targetName = "PcInfoTool-Pro"
+if ($Lite) {
+    $targetName = "PcInfoTool-Lite"
+}
+
+$proc = $null
+if ($Pro) {
+    $proc = Get-Process -Name "PcInfoTool-Pro" -ErrorAction SilentlyContinue
+    $targetName = "PcInfoTool-Pro"
+} elseif ($Lite) {
+    $proc = Get-Process -Name "PcInfoTool-Lite" -ErrorAction SilentlyContinue
+    if (-not $proc) {
+        $proc = Get-Process -Name "PcInfoTool" -ErrorAction SilentlyContinue
+        $targetName = "PcInfoTool"
+    } else {
+        $targetName = "PcInfoTool-Lite"
+    }
+} else {
+    $proc = Get-Process -Name "PcInfoTool-Pro" -ErrorAction SilentlyContinue
+    if ($proc) {
+        $targetName = "PcInfoTool-Pro"
+    } else {
+        $proc = Get-Process -Name "PcInfoTool-Lite" -ErrorAction SilentlyContinue
+        if ($proc) {
+            $targetName = "PcInfoTool-Lite"
+        } else {
+            $proc = Get-Process -Name "PcInfoTool" -ErrorAction SilentlyContinue
+            if ($proc) { $targetName = "PcInfoTool" }
+        }
+    }
+}
 
 if (-not $proc) {
-    Write-Host "[提示] 未检测到正在运行的 PcInfoTool.exe 进程！" -ForegroundColor Yellow
-    Write-Host "正在为您自动从 build\Release\PcInfoTool.exe 启动..." -ForegroundColor Gray
-    
-    $exePath = Join-Path $PSScriptRoot "..\..\build\Release\PcInfoTool.exe"
+    Write-Host "[提示] 未检测到正在运行的目标进程，正在为您自动启动 $targetName.exe..." -ForegroundColor Yellow
+    $exePath = Join-Path $PSScriptRoot "..\..\build\Release\$targetName.exe"
+    if (-not (Test-Path $exePath) -and $targetName -eq "PcInfoTool-Lite") {
+        $exePath = Join-Path $PSScriptRoot "..\..\build\Release\PcInfoTool.exe"
+        $targetName = "PcInfoTool"
+    }
     if (Test-Path $exePath) {
         Start-Process $exePath -WindowStyle Hidden
         Start-Sleep -Seconds 2
-        $proc = Get-Process -Name "PcInfoTool" -ErrorAction SilentlyContinue
+        $proc = Get-Process -Name $targetName -ErrorAction SilentlyContinue
     } else {
         Write-Host "[错误] 未找到可执行文件: $exePath" -ForegroundColor Red
         Write-Host "请先运行根目录下的 build.bat 完成编译！" -ForegroundColor Red
@@ -35,12 +72,12 @@ if (-not $proc) {
 }
 
 $pidVal = $proc.Id
-Write-Host "[✔] 目标进程已锁定: PcInfoTool.exe (PID: $pidVal)" -ForegroundColor Green
+Write-Host "[✔] 目标进程已锁定: $targetName.exe (PID: $pidVal)" -ForegroundColor Green
 Write-Host ""
-Write-Host "正在进行 5 次高精度实时采样（间隔 1 秒），请稍候..." -ForegroundColor Gray
+Write-Host "正在进行 $Samples 次高精度实时采样（间隔 1 秒），请稍候..." -ForegroundColor Gray
 Write-Host "----------------------------------------------------------" -ForegroundColor DarkGray
 
-$sampleCount = 5
+$sampleCount = $Samples
 $wsList = @()
 $pmList = @()
 $cpuList = @()
@@ -77,8 +114,8 @@ for ($i = 1; $i -le $sampleCount; $i++) {
     $handleCount = $p.HandleCount
     $threadCount = $p.Threads.Count
 
-    Write-Host ("第 {0}/5 次采样 -> 内存(工作集): {1,6} MB | 独占物理内存: {2,6} MB | CPU 占用: {3,5} % | 句柄数: {4,3} | 线程数: {5,2}" -f `
-        $i, $wsMB, $pmMB, $cpuPercent, $handleCount, $threadCount) -ForegroundColor White
+    Write-Host ("第 {0}/{1} 次采样 -> 内存(工作集): {2,6} MB | 独占物理内存: {3,6} MB | CPU 占用: {4,5} % | 句柄数: {5,3} | 线程数: {6,2}" -f `
+        $i, $sampleCount, $wsMB, $pmMB, $cpuPercent, $handleCount, $threadCount) -ForegroundColor White
 }
 
 Write-Host "----------------------------------------------------------" -ForegroundColor DarkGray
@@ -89,17 +126,22 @@ $avgWs = [Math]::Round(($wsList | Measure-Object -Average).Average, 2)
 $avgPm = [Math]::Round(($pmList | Measure-Object -Average).Average, 2)
 $avgCpu = [Math]::Round(($cpuList | Measure-Object -Average).Average, 2)
 
+$isProTarget = ($targetName -like "*Pro*")
+$wsGood = if ($isProTarget) { 40 } else { 15 }
+$wsOk = if ($isProTarget) { 60 } else { 30 }
+
 Write-Host "=================== 性能测试汇总评估 ===================" -ForegroundColor Cyan
-Write-Host ("  [内存常驻开销 (WorkingSet)] : 平均 {0} MB" -f $avgWs) -ForegroundColor $(if ($avgWs -lt 15) { "Green" } else { "Yellow" })
+Write-Host ("  [测试目标版本]              : {0}.exe" -f $targetName) -ForegroundColor White
+Write-Host ("  [内存常驻开销 (WorkingSet)] : 平均 {0} MB" -f $avgWs) -ForegroundColor $(if ($avgWs -lt $wsGood) { "Green" } else { "Yellow" })
 Write-Host ("  [独占专用内存 (PrivateMem)] : 平均 {0} MB" -f $avgPm) -ForegroundColor Green
 Write-Host ("  [CPU 平均资源占用 (CPU Usage)] : 平均 {0} %" -f $avgCpu) -ForegroundColor $(if ($avgCpu -lt 0.5) { "Green" } else { "Yellow" })
 Write-Host ""
 
-if ($avgWs -lt 15 -and $avgCpu -lt 0.5) {
-    Write-Host "【综合评级: 极优 (Ultra Light)】" -ForegroundColor Green
+if ($avgWs -lt $wsGood -and $avgCpu -lt 0.5) {
+    Write-Host "【综合评级: 极优 (Ultra-Efficient)】" -ForegroundColor Green
     Write-Host "说明: 该程序处于极简轻量级水准，开销仅为一般 Electron 工具的 1/20，对游戏和重度办公毫无影响。" -ForegroundColor Gray
-} elseif ($avgWs -lt 30) {
-    Write-Host "【综合评级: 优秀 (Lightweight)】" -ForegroundColor Green
+} elseif ($avgWs -lt $wsOk) {
+    Write-Host "【综合评级: 优秀 (Standard)】" -ForegroundColor Green
 } else {
     Write-Host "【综合评级: 良好】" -ForegroundColor Yellow
 }

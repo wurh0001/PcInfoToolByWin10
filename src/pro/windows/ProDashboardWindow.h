@@ -68,6 +68,7 @@ public:
     void CloseTopLayer();
     void Hide();
     bool IsVisible() const { return m_visible; }
+    void SetExternalMenuActive(bool active) { m_settingsMenuActive=active; }
     WindowMode GetMode() const { return m_mode; }
     const SettingsState& GetSettings() const { return m_settings; }
     void SetAppearance(int theme,int layout,float opacity) {m_settings.themeMode=std::clamp(theme,0,3);m_settings.layoutMode=std::clamp(layout,0,1);m_settings.glassOpacity=std::clamp(opacity,.1f,1.f);}

@@ -63,6 +63,11 @@ int main(int argc, char* argv[]) {
             forceLite = true;
         } else if (arg == "--flyout") {
             testFlyout = true;
+        } else {
+            int custom = std::atoi(argv[a]);
+            if (custom >= 5 && custom <= 300) {
+                totalSamples = custom;
+            }
         }
     }
 
@@ -73,6 +78,10 @@ int main(int argc, char* argv[]) {
     } else if (forceLite) {
         targetName = L"PcInfoTool-Lite.exe";
         pid = FindProcessId(targetName);
+        if (pid == 0) {
+            targetName = L"PcInfoTool.exe";
+            pid = FindProcessId(targetName);
+        }
     } else {
         // Auto-detect running process: Pro first, then Lite, then legacy
         if (FindProcessId(L"PcInfoTool-Pro.exe") != 0) {
@@ -90,6 +99,8 @@ int main(int argc, char* argv[]) {
     if (pid == 0) {
         if (forcePro) {
             targetName = L"PcInfoTool-Pro.exe";
+        } else if (forceLite) {
+            targetName = L"PcInfoTool-Lite.exe";
         } else {
             targetName = L"PcInfoTool-Pro.exe"; // Default to testing Pro if available
         }
@@ -120,7 +131,12 @@ int main(int argc, char* argv[]) {
 
     HANDLE hProc = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
     if (!hProc) {
-        std::cout << "[错误] 无法获取进程句柄 (PID: " << pid << ")，可能权限不足！\n\n";
+        // Fallback to limited information query in case PROCESS_VM_READ is restricted
+        hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    }
+    if (!hProc) {
+        DWORD err = GetLastError();
+        std::cout << "[错误] 无法获取进程句柄 (PID: " << pid << ", 错误码: " << err << ")，可能权限不足！\n\n";
         return 1;
     }
 

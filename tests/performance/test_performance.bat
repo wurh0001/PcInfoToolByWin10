@@ -1,5 +1,6 @@
 @echo off
 chcp 65001 >nul
-title PcInfoTool 性能监控与资源开销测试
+title PcInfoTool
 
-"%~dp0..\..\build\Release\test_performance.exe"
+"%~dp0..\..\build\Release\test_performance.exe" 20
+pause

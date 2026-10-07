@@ -75,11 +75,13 @@ static IDWriteFactory* s_sharedDWriteFactory = nullptr;
 static LONG s_rendererCount = 0;
 
 bool LayeredD2DRenderer::Initialize(HWND hwnd, int width, int height) {
+    if(m_registeredRenderer) Cleanup();
     m_hwnd = hwnd;
     m_width = width;
     m_height = height;
 
     InterlockedIncrement(&s_rendererCount);
+    m_registeredRenderer = true;
 
     if (!s_sharedD2DFactory) {
         D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &s_sharedD2DFactory);
@@ -213,10 +215,11 @@ void LayeredD2DRenderer::Cleanup() {
     SafeRelease(m_pDWriteFactory);
     SafeRelease(m_pD2DFactory);
 
-    if (InterlockedDecrement(&s_rendererCount) == 0) {
+    if (m_registeredRenderer && InterlockedDecrement(&s_rendererCount) == 0) {
         SafeRelease(s_sharedDWriteFactory);
         SafeRelease(s_sharedD2DFactory);
     }
+    m_registeredRenderer = false;
 
     if (m_hOldBitmap && m_memDC) {
         SelectObject(m_memDC, m_hOldBitmap);
