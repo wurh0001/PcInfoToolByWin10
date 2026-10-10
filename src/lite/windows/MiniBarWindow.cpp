@@ -1,3 +1,9 @@
+/*
+ * 模块说明：Lite 主窗口执行流程
+ * Create 注册窗口并准备资源，Run 驱动消息循环，OnTimer 获取快照，Render 绘制当前样式。
+ * 屏幕定位使用像素，绘图布局主要使用 DIP；拖动、贴边和鼠标命中必须注意坐标空间。
+ * 工作集修剪只让部分页面离开物理内存，不等于释放对象，后续访问可能重新调入。
+ */
 // 主监控条窗口的声明。
 #include "lite/windows/MiniBarWindow.h"
 // DPI 换算工具：处理不同显示器缩放比例。
@@ -25,6 +31,9 @@ MiniBarWindow::~MiniBarWindow() {
 }
 
 // 注册窗口类、创建主窗口、初始化渲染器，并启动数据采集和刷新定时器。
+/**
+ * 创建窗口及其必要资源；成功返回 true，失败由调用方处理，不等于开始消息循环。
+ */
 bool MiniBarWindow::Create() {
     // 创建并清零一个窗口类描述结构，sizeof(WNDCLASSEX) 用于告诉 Windows 当前结构版本。
     WNDCLASSEX wc = { sizeof(WNDCLASSEX) };
@@ -141,6 +150,9 @@ bool MiniBarWindow::Create() {
 }
 
 // 运行 Windows 消息循环，负责分发定时器、鼠标和窗口生命周期消息。
+/**
+ * 进入 GetMessage/DispatchMessage 消息循环；收到退出消息后返回。
+ */
 void MiniBarWindow::Run() {
     MSG msg = {};
     while (GetMessage(&msg, NULL, 0, 0)) {
@@ -150,6 +162,9 @@ void MiniBarWindow::Run() {
 }
 
 // 在详情弹窗的显示和隐藏状态之间切换。
+/**
+ * 切换 Lite 展开窗口的可见状态，并按悬浮条位置更新展开位置。
+ */
 void MiniBarWindow::ToggleFlyout() {
     if (m_flyout.IsVisible()) {
         // 详情已打开：关闭详情；如果主条贴边且鼠标已经离开，则同时收起主条。
@@ -176,6 +191,9 @@ void MiniBarWindow::ToggleFlyout() {
 }
 
 // 将贴靠在屏幕边缘的窗口移回工作区，并清除贴靠状态。
+/**
+ * 退出贴边状态，调整窗口位置以恢复可见主体。
+ */
 void MiniBarWindow::UndockFromEdge() {
     if (!m_hwnd) return;
     RECT rc;
@@ -205,6 +223,9 @@ void MiniBarWindow::UndockFromEdge() {
 }
 
 // 从配置文件加载主题、位置、自动隐藏等用户设置。
+/**
+ * 读取保存的窗口和主题设置，应用到当前窗口状态。
+ */
 void MiniBarWindow::LoadSettings() {
     auto cfg = ConfigManager::LoadConfig();
     // 限制主题编号范围，避免配置文件损坏导致非法枚举值。
@@ -215,6 +236,9 @@ void MiniBarWindow::LoadSettings() {
 }
 
 // 将当前窗口位置、主题和交互设置保存到配置文件。
+/**
+ * 收集当前窗口位置与外观选项并写入配置。
+ */
 void MiniBarWindow::SaveSettings() {
     ConfigManager::AppConfig cfg;
     if (m_hwnd) {
@@ -231,6 +255,9 @@ void MiniBarWindow::SaveSettings() {
 }
 
 // 切换浅色/深色主题，并立即更新详情窗口和主窗口。
+/**
+ * 修改亮色模式并同步相关页面或重新绘制。
+ */
 void MiniBarWindow::SetLightMode(bool light) {
     m_isLightMode = light;
     m_preset = light ? Theme::ThemePreset::GlacierWhite : Theme::ThemePreset::ObsidianDark;
@@ -240,6 +267,9 @@ void MiniBarWindow::SetLightMode(bool light) {
 }
 
 // 设置完整主题预设，例如深色、白色或玻璃效果主题。
+/**
+ * 切换主题预设，使下一帧使用对应调色板。
+ */
 void MiniBarWindow::SetThemePreset(Theme::ThemePreset preset) {
     m_preset = preset;
     m_isLightMode = (preset == Theme::ThemePreset::GlacierWhite || preset == Theme::ThemePreset::AuroraGlass);
@@ -249,6 +279,9 @@ void MiniBarWindow::SetThemePreset(Theme::ThemePreset preset) {
 }
 
 // 设置监控条的显示样式并保存配置。
+/**
+ * 切换 Lite 展示样式并保存选择。
+ */
 void MiniBarWindow::SetThemeStyle(ThemeStyle style) {
     m_style = style;
     SaveSettings();
@@ -256,6 +289,9 @@ void MiniBarWindow::SetThemeStyle(ThemeStyle style) {
 }
 
 // 设置鼠标悬停时是否自动隐藏监控条。
+/**
+ * 设置鼠标悬停时的自动隐藏行为，并同步显示。
+ */
 void MiniBarWindow::SetAutoHideOnHover(bool enable) {
     m_autoHideOnHover = enable;
     if (!m_autoHideOnHover) {
@@ -266,6 +302,9 @@ void MiniBarWindow::SetAutoHideOnHover(bool enable) {
 }
 
 // 根据贴靠方向计算收起状态下的细条区域，坐标使用 DIP 单位。
+/**
+ * 返回折叠贴边条的 DIP 命中区域，供绘制和交互共用。
+ */
 D2D1_RECT_F MiniBarWindow::GetCollapsedStripeRectDip() const {
     float W = m_dipWidth;
     float H = m_dipHeight;
@@ -289,6 +328,9 @@ D2D1_RECT_F MiniBarWindow::GetCollapsedStripeRectDip() const {
 }
 
 // 根据窗口与显示器工作区边缘的距离判断当前贴靠方向。
+/**
+ * 检查窗口与显示器工作区的关系，更新贴边方向和显示状态。
+ */
 void MiniBarWindow::UpdateDockState() {
     if (!m_hwnd) return;
     RECT rc;
@@ -317,6 +359,12 @@ void MiniBarWindow::UpdateDockState() {
 }
 
 // 绘制收起状态下使用的 CPU 芯片图标。
+/**
+ * 绘制CPU图标；x/y 指定局部位置，brush 提供颜色，几何图形组合成符号。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param brush 借用的颜色画笔，不转移所有权。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void MiniBarWindow::DrawCpuIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1Brush* brush) {
     if (!rt || !brush) return;
     // Central chip package square (9x9)
@@ -342,6 +390,12 @@ void MiniBarWindow::DrawCpuIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1
 }
 
 // 绘制收起状态下使用的内存条图标。
+/**
+ * 绘制内存图标；x/y 指定局部位置，brush 提供颜色，几何图形组合成符号。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param brush 借用的颜色画笔，不转移所有权。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void MiniBarWindow::DrawRamIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1Brush* brush) {
     if (!rt || !brush) return;
     // Outer memory module rectangle
@@ -359,6 +413,12 @@ void MiniBarWindow::DrawRamIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1
 }
 
 // 绘制收起状态下使用的 GPU 显卡图标。
+/**
+ * 绘制GPU图标；x/y 指定局部位置，brush 提供颜色，几何图形组合成符号。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param brush 借用的颜色画笔，不转移所有权。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void MiniBarWindow::DrawGpuIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1Brush* brush) {
     if (!rt || !brush) return;
     // GPU graphic card outer shroud rectangle (approx 12x9)
@@ -375,6 +435,11 @@ void MiniBarWindow::DrawGpuIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1
 }
 
 // 绘制窗口贴靠并收起后的三段式 CPU/RAM/GPU 指标条。
+/**
+ * 绘制 Lite 折叠条中的三个指标。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void MiniBarWindow::RenderCollapsedTriBar(ID2D1DCRenderTarget* rt, const Theme::Palette& pal, float W, float H) {
     D2D1_RECT_F sRc = GetCollapsedStripeRectDip();
     float sW = sRc.right - sRc.left;
@@ -553,12 +618,24 @@ void MiniBarWindow::RenderCollapsedTriBar(ID2D1DCRenderTarget* rt, const Theme::
     if (pGpuBrush) pGpuBrush->Release();
 }
 
+/**
+ * 用线段/几何绘制展开箭头，方向由参数或状态决定。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param brush 借用的颜色画笔，不转移所有权。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void MiniBarWindow::DrawChevron(ID2D1DCRenderTarget* rt, float centerX, float centerY, ID2D1Brush* brush) {
     if (!rt || !brush) return;
     rt->DrawLine(D2D1::Point2F(centerX - 3.8f, centerY - 1.5f), D2D1::Point2F(centerX, centerY + 2.5f), brush, 1.6f);
     rt->DrawLine(D2D1::Point2F(centerX, centerY + 2.5f), D2D1::Point2F(centerX + 3.8f, centerY - 1.5f), brush, 1.6f);
 }
 
+/**
+ * 按百分比绘制圆环轨道和有效弧段，单位和颜色由调用方提供。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param percent 比例数值，绘图前需限制到有效范围。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void MiniBarWindow::DrawRingGauge(ID2D1DCRenderTarget* rt, float cx, float cy, float radius, float strokeWidth, float percent, ID2D1Brush* trackBrush, ID2D1Brush* activeBrush) {
     if (!rt) return;
 
@@ -610,6 +687,13 @@ void MiniBarWindow::DrawRingGauge(ID2D1DCRenderTarget* rt, float cx, float cy, f
 }
 
 // 主窗口过程：Windows 的定时器、鼠标、拖动、贴边和右键菜单都从这里进入。
+/**
+ * Win32 窗口过程：按消息类型分发交互；用窗口用户数据关联 C++ 实例。
+ * @param hwnd Win32 窗口句柄，不是 C++ 对象地址。
+ * @param msg 窗口消息编号，决定后续分支。
+ * @param wParam 消息附加参数，含义随 msg 改变。
+ * @param lParam 消息附加参数，鼠标坐标等需按消息格式解码。
+ */
 LRESULT CALLBACK MiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     MiniBarWindow* pThis = nullptr;
     // 创建窗口时把 this 指针保存到窗口实例，后续静态窗口过程才能访问成员变量。
@@ -623,6 +707,7 @@ LRESULT CALLBACK MiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
     if (pThis) {
         switch (msg) {
+        // 定时器消息：wParam 是定时器 ID，不同 ID 对应采样、动画或资源回收。
         case WM_TIMER:
             // 只处理本程序创建的 1 秒刷新定时器。
             if (wParam == 1) {
@@ -689,6 +774,7 @@ LRESULT CALLBACK MiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case WM_NCMOUSEMOVE:
+        // 鼠标移动消息，客户区坐标以像素给出；绘图命中前注意 DPI 和滚动偏移。
         case WM_MOUSEMOVE: {
             // 鼠标重新进入窗口时恢复自动隐藏的主体，并持续追踪离开事件。
             if (pThis->m_autoHideOnHover && pThis->m_isHoverHidden) {
@@ -704,6 +790,7 @@ LRESULT CALLBACK MiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case WM_NCMOUSELEAVE:
+        // 鼠标离开客户区：清除悬停状态，避免高亮或提示卡残留。
         case WM_MOUSELEAVE: {
             // 鼠标离开后恢复正常显示，并在贴边状态下按条件收起主条。
             pThis->m_mouseTracking = false;
@@ -740,6 +827,7 @@ LRESULT CALLBACK MiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             return DefWindowProc(hwnd, msg, wParam, lParam);
         }
 
+        // 左键按下：记录命中项或拖动起点；按下与松开是不同事件。
         case WM_LBUTTONDOWN: {
             // 客户区点击通常来自右侧箭头，先记录位置和时间，稍后区分点击与拖动。
             pThis->m_timeDown = GetTickCount64();
@@ -869,6 +957,7 @@ LRESULT CALLBACK MiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             return DefWindowProc(hwnd, msg, wParam, lParam);
         }
 
+        // 左键松开：完成拖动或确认点击，并结束鼠标捕获状态。
         case WM_LBUTTONUP: {
             // 右侧按钮的客户区点击：展开详情，或从收起状态恢复主条。
             POINT pt;
@@ -950,6 +1039,7 @@ LRESULT CALLBACK MiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             return 0;
         }
 
+        // 窗口销毁：按该窗口角色清理状态；只有应用主窗口应结束应用循环。
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
@@ -958,6 +1048,9 @@ LRESULT CALLBACK MiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
+/**
+ * 定时读取最新数据并更新可见窗口，同时处理该窗口的周期性状态。
+ */
 void MiniBarWindow::OnTimer() {
     // 定时器运行在 UI 线程：只复制采集快照，不直接执行耗时的系统查询。
     m_snapshot = m_collector.GetLatestSnapshot();
@@ -993,6 +1086,10 @@ void MiniBarWindow::OnTimer() {
     }
 }
 
+/**
+ * 按当前状态绘制并提交一帧；数据来自已保存快照，绘图不等于重新采集硬件。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void MiniBarWindow::Render() {
     // 所有模式共用一帧 Direct2D 绘制：先绑定渲染目标，再按当前状态选择绘制分支。
     auto rt = m_renderer.BeginDraw();
@@ -1052,6 +1149,11 @@ void MiniBarWindow::Render() {
     m_renderer.EndDraw();
 }
 
+/**
+ * 绘制 Lite 圆环玻璃样式，使用当前主题颜色和采样快照。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void MiniBarWindow::RenderRingGlassStyle(ID2D1DCRenderTarget* rt, const Theme::Palette& pal, D2D1_COLOR_F cpuStatusCol, float W, float H) {
     // Frosted Translucent Liquid Glass Background
     D2D1_ROUNDED_RECT pillRc = D2D1::RoundedRect(
@@ -1249,6 +1351,11 @@ void MiniBarWindow::RenderRingGlassStyle(ID2D1DCRenderTarget* rt, const Theme::P
     if (pBtnIconBrush) pBtnIconBrush->Release();
 }
 
+/**
+ * 绘制 Lite 条形样式，使用当前主题颜色和采样快照。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void MiniBarWindow::RenderBarDarkStyle(ID2D1DCRenderTarget* rt, const Theme::Palette& pal, D2D1_COLOR_F cpuStatusCol, float W, float H) {
     ID2D1SolidColorBrush* pWindowBg = nullptr;
     ID2D1SolidColorBrush* pWindowBorder = nullptr;

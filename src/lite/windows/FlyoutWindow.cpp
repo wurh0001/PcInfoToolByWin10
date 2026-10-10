@@ -1,3 +1,8 @@
+/*
+ * 模块说明：Lite 详情页面实现
+ * ShowNear 依据悬浮条定位；各 Draw 函数按顺序绘制模块，Render 负责一帧的开始和提交。
+ * 原始 COM 指针需要 Release，临时画笔和几何对象也必须在用完后释放。
+ */
 // 详情弹出窗口的声明。
 #include "lite/windows/FlyoutWindow.h"
 // DPI 换算工具：在 DIP 和实际像素之间转换。
@@ -20,6 +25,9 @@ FlyoutWindow::~FlyoutWindow() {
 }
 
 // 注册并创建隐藏的详情窗口，同时初始化透明 Direct2D 渲染器。
+/**
+ * 创建窗口及其必要资源；成功返回 true，失败由调用方处理，不等于开始消息循环。
+ */
 bool FlyoutWindow::Create() {
     WNDCLASSEX wc = { sizeof(WNDCLASSEX) };
     wc.lpfnWndProc = FlyoutWindow::WndProc;
@@ -52,6 +60,9 @@ bool FlyoutWindow::Create() {
 }
 
 // 根据主监控条位置显示详情窗口，并在屏幕边缘自动调整位置。
+/**
+ * 依据锚点矩形显示窗口；具体屏幕定位与 DPI 转换在实现内完成。
+ */
 void FlyoutWindow::ShowNear(const RECT& anchorRect) {
     if (!m_hwnd) return;
 
@@ -104,6 +115,9 @@ void FlyoutWindow::ShowNear(const RECT& anchorRect) {
 }
 
 // 隐藏详情窗口，释放工作集并保留窗口和渲染资源以便下次快速显示。
+/**
+ * 隐藏当前窗口并更新交互状态；隐藏本身并不等于销毁所有 C++ 对象。
+ */
 void FlyoutWindow::Hide() {
     if (!m_visible) return;
     m_visible = false;
@@ -119,6 +133,9 @@ void FlyoutWindow::Hide() {
 }
 
 // 设置浅色或深色模式，并在弹窗可见时立即重绘。
+/**
+ * 修改亮色模式并同步相关页面或重新绘制。
+ */
 void FlyoutWindow::SetLightMode(bool lightMode) {
     m_isLightMode = lightMode;
     m_preset = lightMode ? Theme::ThemePreset::GlacierWhite : Theme::ThemePreset::ObsidianDark;
@@ -129,6 +146,9 @@ void FlyoutWindow::SetLightMode(bool lightMode) {
 }
 
 // 更新详情窗口的主题预设。
+/**
+ * 切换主题预设，使下一帧使用对应调色板。
+ */
 void FlyoutWindow::SetThemePreset(Theme::ThemePreset preset) {
     m_preset = preset;
     m_isLightMode = (preset == Theme::ThemePreset::GlacierWhite || preset == Theme::ThemePreset::AuroraGlass);
@@ -139,6 +159,10 @@ void FlyoutWindow::SetThemePreset(Theme::ThemePreset preset) {
 }
 
 // 接收主窗口传来的最新系统指标，并在可见时刷新界面。
+/**
+ * 复制采集快照到窗口状态；调用方负责提供有效数据，不在这里执行硬件查询。
+ * @param snapshot 采集结果；窗口保存副本，避免直接依赖采集线程可变数据。
+ */
 void FlyoutWindow::UpdateSnapshot(const MetricsSnapshot& snapshot) {
     m_snapshot = snapshot;
     if (m_visible && m_hwnd) {
@@ -147,6 +171,13 @@ void FlyoutWindow::UpdateSnapshot(const MetricsSnapshot& snapshot) {
 }
 
 // 处理详情窗口的激活、关闭按钮和销毁消息。
+/**
+ * Win32 窗口过程：按消息类型分发交互；用窗口用户数据关联 C++ 实例。
+ * @param hwnd Win32 窗口句柄，不是 C++ 对象地址。
+ * @param msg 窗口消息编号，决定后续分支。
+ * @param wParam 消息附加参数，含义随 msg 改变。
+ * @param lParam 消息附加参数，鼠标坐标等需按消息格式解码。
+ */
 LRESULT CALLBACK FlyoutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     FlyoutWindow* pThis = nullptr;
     if (msg == WM_NCCREATE) {
@@ -166,6 +197,7 @@ LRESULT CALLBACK FlyoutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 return 0;
             }
             break;
+        // 左键松开：完成拖动或确认点击，并结束鼠标捕获状态。
         case WM_LBUTTONUP: {
             int x = LOWORD(lParam);
             int y = HIWORD(lParam);
@@ -177,6 +209,7 @@ LRESULT CALLBACK FlyoutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             }
             break;
         }
+        // 窗口销毁：按该窗口角色清理状态；只有应用主窗口应结束应用循环。
         case WM_DESTROY:
             pThis->m_hwnd = nullptr;
             return 0;
@@ -188,6 +221,12 @@ LRESULT CALLBACK FlyoutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 // -------------------------------------------------------------
 // Vector Icon Helpers
 // -------------------------------------------------------------
+/**
+ * 绘制CPU图标；x/y 指定局部位置，brush 提供颜色，几何图形组合成符号。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param brush 借用的颜色画笔，不转移所有权。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void FlyoutWindow::DrawCpuIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1Brush* brush) {
     if (!rt || !brush) return;
     D2D1_ROUNDED_RECT pkg = D2D1::RoundedRect(D2D1::RectF(x + 2.5f, y + 2.5f, x + 11.5f, y + 11.5f), 1.5f, 1.5f);
@@ -204,6 +243,12 @@ void FlyoutWindow::DrawCpuIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1B
     rt->DrawLine(D2D1::Point2F(x + 11.5f, y + 9.5f), D2D1::Point2F(x + 13.5f, y + 9.5f), brush, 1.2f);
 }
 
+/**
+ * 绘制内存图标；x/y 指定局部位置，brush 提供颜色，几何图形组合成符号。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param brush 借用的颜色画笔，不转移所有权。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void FlyoutWindow::DrawRamIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1Brush* brush) {
     if (!rt || !brush) return;
     D2D1_ROUNDED_RECT modRc = D2D1::RoundedRect(D2D1::RectF(x + 0.5f, y + 2.0f, x + 14.5f, y + 11.5f), 1.5f, 1.5f);
@@ -217,6 +262,12 @@ void FlyoutWindow::DrawRamIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1B
     rt->DrawLine(D2D1::Point2F(x + 12.0f, y + 11.5f), D2D1::Point2F(x + 12.0f, y + 13.5f), brush, 1.2f);
 }
 
+/**
+ * 绘制GPU图标；x/y 指定局部位置，brush 提供颜色，几何图形组合成符号。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param brush 借用的颜色画笔，不转移所有权。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void FlyoutWindow::DrawGpuIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1Brush* brush) {
     if (!rt || !brush) return;
     D2D1_ROUNDED_RECT shroudRc = D2D1::RoundedRect(D2D1::RectF(x + 0.5f, y + 1.0f, x + 10.5f, y + 9.5f), 1.2f, 1.2f);
@@ -227,6 +278,12 @@ void FlyoutWindow::DrawGpuIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1B
     rt->DrawLine(D2D1::Point2F(x + 10.5f, y + 0.5f), D2D1::Point2F(x + 10.5f, y + 10.0f), brush, 1.1f);
 }
 
+/**
+ * 绘制磁盘图标；x/y 指定局部位置，brush 提供颜色，几何图形组合成符号。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param brush 借用的颜色画笔，不转移所有权。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void FlyoutWindow::DrawDiskIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1Brush* brush) {
     if (!rt || !brush) return;
     D2D1_ROUNDED_RECT body = D2D1::RoundedRect(D2D1::RectF(x + 1.0f, y + 1.5f, x + 13.0f, y + 10.5f), 1.8f, 1.8f);
@@ -273,6 +330,9 @@ static void CreateWaveformGrad(
     }
 }
 
+/**
+ * 释放本对象持有的绘图接口，为销毁或重新初始化准备。
+ */
 void FlyoutWindow::FlyoutBrushPool::ReleaseAll() {
     SafeReleaseCOM(pWindowBg);
     SafeReleaseCOM(pWindowBorder);
@@ -313,6 +373,9 @@ void FlyoutWindow::FlyoutBrushPool::ReleaseAll() {
     lastCpuColor = { 0, 0, 0, 0 };
 }
 
+/**
+ * 首次使用或重建目标后创建画笔，已有可用资源时复用。
+ */
 void FlyoutWindow::FlyoutBrushPool::EnsureBrushes(
     ID2D1DCRenderTarget* rt,
     const Theme::Palette& pal,
@@ -398,6 +461,7 @@ void FlyoutWindow::FlyoutBrushPool::EnsureBrushes(
 // -------------------------------------------------------------
 // Reusable High-Fidelity Waveform Plotter
 // -------------------------------------------------------------
+// 将历史采样转换为线条/面积几何，绘制网格、曲线和尾点；坐标基于指定区域。
 void FlyoutWindow::DrawWaveform(
     ID2D1DCRenderTarget* rt,
     float chartX, float chartY, float chartW, float chartH,
@@ -530,6 +594,10 @@ void FlyoutWindow::DrawWaveform(
 // -------------------------------------------------------------
 // Main Render Entry
 // -------------------------------------------------------------
+/**
+ * 按当前状态绘制并提交一帧；数据来自已保存快照，绘图不等于重新采集硬件。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void FlyoutWindow::Render() {
     auto rt = m_renderer.BeginDraw();
     if (!rt) return;
@@ -583,6 +651,13 @@ void FlyoutWindow::Render() {
 }
 
 // 绘制详情窗口标题、在线状态指示灯和关闭按钮。
+/**
+ * 绘制页头与操作按钮，并推进后续内容的纵向起点。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param curY 通过引用传入的纵向游标，绘完后可供下一模块继续排列。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void FlyoutWindow::DrawHeader(ID2D1DCRenderTarget* rt, float& curY, float width, const Theme::Palette& pal) {
     float startX = 12.0f;
 
@@ -613,6 +688,13 @@ void FlyoutWindow::DrawHeader(ID2D1DCRenderTarget* rt, float& curY, float width,
 // -------------------------------------------------------------
 // SECTION 1: CPU Waveform Card
 // -------------------------------------------------------------
+/**
+ * 绘制CPU模块；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param curY 通过引用传入的纵向游标，绘完后可供下一模块继续排列。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void FlyoutWindow::DrawCpuSection(ID2D1DCRenderTarget* rt, float& curY, float width, const Theme::Palette& pal) {
     float startX = 12.0f;
     float cardH = 82.0f;
@@ -667,6 +749,13 @@ void FlyoutWindow::DrawCpuSection(ID2D1DCRenderTarget* rt, float& curY, float wi
 // -------------------------------------------------------------
 // SECTION 2: Memory Waveform Card
 // -------------------------------------------------------------
+/**
+ * 绘制内存模块；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param curY 通过引用传入的纵向游标，绘完后可供下一模块继续排列。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void FlyoutWindow::DrawMemorySection(ID2D1DCRenderTarget* rt, float& curY, float width, const Theme::Palette& pal) {
     float startX = 12.0f;
     float cardH = 82.0f;
@@ -721,6 +810,13 @@ void FlyoutWindow::DrawMemorySection(ID2D1DCRenderTarget* rt, float& curY, float
 // -------------------------------------------------------------
 // SECTION 3: Network Dual Waveform Cards (Download & Upload)
 // -------------------------------------------------------------
+/**
+ * 绘制网络模块；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param curY 通过引用传入的纵向游标，绘完后可供下一模块继续排列。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void FlyoutWindow::DrawNetworkSection(ID2D1DCRenderTarget* rt, float& curY, float width, const Theme::Palette& pal) {
     float startX = 12.0f;
     float cardH = 82.0f;
@@ -838,6 +934,13 @@ void FlyoutWindow::DrawNetworkSection(ID2D1DCRenderTarget* rt, float& curY, floa
 // -------------------------------------------------------------
 // SECTION 4: GPU Waveform Card
 // -------------------------------------------------------------
+/**
+ * 绘制GPU模块；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param curY 通过引用传入的纵向游标，绘完后可供下一模块继续排列。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void FlyoutWindow::DrawGpuSection(ID2D1DCRenderTarget* rt, float& curY, float width, const Theme::Palette& pal) {
     float startX = 12.0f;
     float cardH = 82.0f;
@@ -890,6 +993,13 @@ void FlyoutWindow::DrawGpuSection(ID2D1DCRenderTarget* rt, float& curY, float wi
 // -------------------------------------------------------------
 // SECTION 5: Disk Storage Module
 // -------------------------------------------------------------
+/**
+ * 绘制磁盘模块；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param curY 通过引用传入的纵向游标，绘完后可供下一模块继续排列。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void FlyoutWindow::DrawDiskSection(ID2D1DCRenderTarget* rt, float& curY, float width, const Theme::Palette& pal) {
     if (m_snapshot.disks.empty()) return;
 

@@ -146,21 +146,22 @@ build.bat
 构建成功后产物将生成在 `build/Release/`：
 - `PcInfoTool-Pro.exe`：全功能专业版
 - `PcInfoTool-Lite.exe`：极简轻量版
-- `test_performance.exe`：性能高精度采样工具
+
+测试工具单独生成在 `build/test-tools/`，其中 `test_performance.exe` 是性能采样工具。构建缓存放在 `build/cache/`，性能日志放在 `build/performance-results/`，截图及传感器报告放在 `build/test-results/`。运行依赖的源文件放在 `build/dependencies/`。
 
 #### 手动 CMake 构建
 ```powershell
-cmake -S . -B build/cmake -G "Visual Studio 17 2022" -A x64 -DPCINFO_BUILD_VISUAL_TESTS=ON
-cmake --build build/cmake --config Release
+cmake -S . -B build/cache/main -G "Visual Studio 17 2022" -A x64 -DPCINFO_BUILD_VISUAL_TESTS=ON
+cmake --build build/cache/main --config Release
 ```
 
 #### 运行性能测试与离屏回归
 ```powershell
 # 运行 10 秒连续性能采样评估
-.\build\Release\test_performance.exe 10
+.\build\test-tools\test_performance.exe 10
 
 # 运行自动化页面离屏渲染回归测试
-ctest --test-dir build/cmake -C Release --output-on-failure
+ctest --test-dir build/cache/main -C Release --output-on-failure
 ```
 
 ---

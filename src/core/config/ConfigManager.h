@@ -1,3 +1,8 @@
+/*
+ * 模块说明：本地配置与启动项
+ * INI 保存外观、监控和位置；注册表 Run 键保存启动命令；Lite/Pro 使用各自的启动项。
+ * 读取后校验范围和顺序，写入返回成功标志；注册表存在启动项不等于系统最终一定执行它。
+ */
 // ConfigManager.h
 // 配置管理模块：统一负责读写本地 config.ini，以及“开机自启动”注册表项。
 //
@@ -84,7 +89,7 @@ namespace ConfigManager {
         cfg.autoHideOnHover = (GetPrivateProfileIntW(L"Behavior", L"AutoHideOnHover", 0, ini.c_str()) != 0);
 
         // 开机自启动不读 ini，而是直接查注册表。
-        // 这样即使用户在“任务管理器-启动”里手动禁用，程序读到的也是真实状态。
+        // 这里只反映 Run 注册表值是否存在；任务管理器的启动批准状态没有在此另行读取。
         HKEY hKey;
         // 打开当前用户的开机启动项：
         // HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run。
@@ -143,49 +148,177 @@ namespace ConfigManager {
         return theme&&layout&&opacity;
     }
 
+    // Pro 版监控与指示器设置，对应 ini 中的 [ProMonitoring] 节
     struct ProMonitoring {
-        std::array<bool,4> visible{true,true,true,true};
-        std::array<int,4> order{0,1,2,3};
-        int interval=1,unit=0,alert=85;
+        // 4 个指标的显示开关 (依次对应: 0:CPU占用, 1:CPU温度, 2:内存占用, 3:网络速率)
+        std::array<bool,4> visible{true, true, true, true};
+        // 4 个指标在悬浮条上的排列顺序 (默认 0,1,2,3，可通过拖拽重排)
+        std::array<int,4> order{0, 1, 2, 3};
+        // UI 刷新选项：0 对应 0.5 秒，1 对应 1 秒，2 对应 2 秒；不改变采集线程周期。
+        int interval = 1;
+        // 温度单位 (0: 摄氏度 °C, 1: 华氏度 °F)，默认 0
+        int unit = 0;
+        // CPU 高温警报阈值 (默认 85°C；0 代表关闭报警；可选 75~95 且为 5 的倍数)
+        int alert = 85;
+        // 当前选中的物理磁盘硬件设备 ID (例如 NVMe 硬盘的设备实例路径)
         std::wstring diskId;
     };
-    inline ProMonitoring LoadProMonitoring(const std::wstring& path=GetConfigFilePath()) {
-        ProMonitoring v;std::array<bool,4> seen{};bool valid=true;
-        for(int i=0;i<4;++i){auto key=L"Visible"+std::to_wstring(i);v.visible[i]=GetPrivateProfileIntW(L"ProMonitoring",key.c_str(),1,path.c_str())!=0;key=L"Order"+std::to_wstring(i);int id=static_cast<int>(GetPrivateProfileIntW(L"ProMonitoring",key.c_str(),i,path.c_str()));if(id<0||id>3||seen[id])valid=false;else seen[id]=true;v.order[i]=id;}
-        if(!valid)v.order={0,1,2,3};
-        v.interval=std::clamp(static_cast<int>(GetPrivateProfileIntW(L"ProMonitoring",L"Interval",1,path.c_str())),0,2);
-        v.unit=std::clamp(static_cast<int>(GetPrivateProfileIntW(L"ProMonitoring",L"TemperatureUnit",0,path.c_str())),0,1);
-        int alert=static_cast<int>(GetPrivateProfileIntW(L"ProMonitoring",L"AlertCelsius",85,path.c_str()));v.alert=alert==0||(alert>=75&&alert<=95&&alert%5==0)?alert:85;
-        wchar_t disk[2048];GetPrivateProfileStringW(L"ProMonitoring",L"DiskId",L"",disk,2048,path.c_str());v.diskId=disk;return v;
-    }
-    inline bool SaveProMonitoring(const ProMonitoring& v,const std::wstring& path=GetConfigFilePath()) {
-        bool ok=true;auto write=[&](const wchar_t* key,const std::wstring& value){if(!WritePrivateProfileStringW(L"ProMonitoring",key,value.c_str(),path.c_str()))ok=false;};
-        for(int i=0;i<4;++i){write((L"Visible"+std::to_wstring(i)).c_str(),v.visible[i]?L"1":L"0");write((L"Order"+std::to_wstring(i)).c_str(),std::to_wstring(v.order[i]));}
-        write(L"Interval",std::to_wstring(v.interval));write(L"TemperatureUnit",std::to_wstring(v.unit));write(L"AlertCelsius",std::to_wstring(v.alert));write(L"DiskId",v.diskId);return ok;
+
+    /**
+     * @brief 从 ini 文件读取 Pro 版监控指示器与警报设置
+     * @param path ini 文件路径（默认取当前 exe 同目录下的 config.ini）
+     */
+    inline ProMonitoring LoadProMonitoring(const std::wstring& path = GetConfigFilePath()) {
+        ProMonitoring v;
+        std::array<bool,4> seen{};
+        bool valid = true;
+
+        // 循环读取 4 个指示器的显隐状态与排列次序
+        for (int i = 0; i < 4; ++i) {
+            auto key = L"Visible" + std::to_wstring(i);
+            v.visible[i] = GetPrivateProfileIntW(L"ProMonitoring", key.c_str(), 1, path.c_str()) != 0;
+
+            key = L"Order" + std::to_wstring(i);
+            int id = static_cast<int>(GetPrivateProfileIntW(L"ProMonitoring", key.c_str(), i, path.c_str()));
+            // 校验顺序索引是否在 0~3 范围内，且没有重复出现
+            if (id < 0 || id > 3 || seen[id]) valid = false;
+            else seen[id] = true;
+            v.order[i] = id;
+        }
+        // 如果 ini 中配置的顺序无效或重复，回退为默认顺序 [0, 1, 2, 3]
+        if (!valid) v.order = {0, 1, 2, 3};
+
+        // 读取采样间隔并限制在 0~2 之间
+        v.interval = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"ProMonitoring", L"Interval", 1, path.c_str())), 0, 2);
+        // 读取温度单位 (0: °C, 1: °F)
+        v.unit = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"ProMonitoring", L"TemperatureUnit", 0, path.c_str())), 0, 1);
+        // 读取高温警报值，仅允许 0(关闭) 或 75~95 之间的 5 的倍数
+        int alert = static_cast<int>(GetPrivateProfileIntW(L"ProMonitoring", L"AlertCelsius", 85, path.c_str()));
+        v.alert = (alert == 0 || (alert >= 75 && alert <= 95 && alert % 5 == 0)) ? alert : 85;
+
+        // 读取选中的磁盘设备 ID
+        wchar_t disk[2048] = {};
+        GetPrivateProfileStringW(L"ProMonitoring", L"DiskId", L"", disk, 2048, path.c_str());
+        v.diskId = disk;
+        return v;
     }
 
-    // Pro has its own Run value; never change Lite's PcInfoTool entry.
+    /**
+     * @brief 将 Pro 版监控指示器设置持久化到 ini 文件
+     * @return true 保存成功；false 写入遇到错误
+     */
+    inline bool SaveProMonitoring(const ProMonitoring& v, const std::wstring& path = GetConfigFilePath()) {
+        bool ok = true;
+        auto write = [&](const wchar_t* key, const std::wstring& value) {
+            if (!WritePrivateProfileStringW(L"ProMonitoring", key, value.c_str(), path.c_str())) ok = false;
+        };
+
+        for (int i = 0; i < 4; ++i) {
+            write((L"Visible" + std::to_wstring(i)).c_str(), v.visible[i] ? L"1" : L"0");
+            write((L"Order" + std::to_wstring(i)).c_str(), std::to_wstring(v.order[i]));
+        }
+        write(L"Interval", std::to_wstring(v.interval));
+        write(L"TemperatureUnit", std::to_wstring(v.unit));
+        write(L"AlertCelsius", std::to_wstring(v.alert));
+        write(L"DiskId", v.diskId);
+        return ok;
+    }
+
+    /**
+     * @brief 检查 Pro 专业版是否已在注册表设置开机自启
+     * 
+     * 注意：Pro 版使用独立的键名 "PcInfoTool-Pro"，与 Lite 版的 "PcInfoTool" 隔离，互不干扰
+     */
     inline bool IsProAutoStartEnabled() {
-        DWORD bytes=0;return RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",L"PcInfoTool-Pro",RRF_RT_REG_SZ,nullptr,nullptr,&bytes)==ERROR_SUCCESS;
+        DWORD bytes = 0;
+        return RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            L"PcInfoTool-Pro", RRF_RT_REG_SZ, nullptr, nullptr, &bytes) == ERROR_SUCCESS;
     }
+
+    /**
+     * @brief 开启或关闭 Pro 专业版的开机自启
+     * @param enabled true: 写入注册表；false: 从注册表删除对应键值
+     */
     inline bool SetProAutoStart(bool enabled) {
-        HKEY key=nullptr;const auto opened=RegCreateKeyExW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",0,nullptr,0,KEY_SET_VALUE,nullptr,&key,nullptr);
-        if(opened!=ERROR_SUCCESS)return false;
+        HKEY key = nullptr;
+        const auto opened = RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr);
+        if (opened != ERROR_SUCCESS) return false;
+
         LSTATUS result;
-        if(enabled){wchar_t exe[32768];DWORD size=GetModuleFileNameW(nullptr,exe,32768);if(!size||size>=32768){RegCloseKey(key);return false;}const auto command=L"\""+std::wstring(exe)+L"\"";result=RegSetValueExW(key,L"PcInfoTool-Pro",0,REG_SZ,reinterpret_cast<const BYTE*>(command.c_str()),static_cast<DWORD>((command.size()+1)*sizeof(wchar_t)));}
-        else {result=RegDeleteValueW(key,L"PcInfoTool-Pro");if(result==ERROR_FILE_NOT_FOUND)result=ERROR_SUCCESS;}
-        RegCloseKey(key);return result==ERROR_SUCCESS;
+        if (enabled) {
+            wchar_t exe[32768];
+            DWORD size = GetModuleFileNameW(nullptr, exe, 32768);
+            if (!size || size >= 32768) {
+                RegCloseKey(key);
+                return false;
+            }
+            // 给可执行文件路径加上双引号，避免路径含空格导致系统解析失败
+            const auto command = L"\"" + std::wstring(exe) + L"\"";
+            result = RegSetValueExW(key, L"PcInfoTool-Pro", 0, REG_SZ,
+                reinterpret_cast<const BYTE*>(command.c_str()),
+                static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t)));
+        } else {
+            result = RegDeleteValueW(key, L"PcInfoTool-Pro");
+            if (result == ERROR_FILE_NOT_FOUND) result = ERROR_SUCCESS;
+        }
+        RegCloseKey(key);
+        return result == ERROR_SUCCESS;
     }
-    inline ProGeneralSettings LoadProGeneral(const std::wstring& path=GetConfigFilePath()) {
-        ProGeneralSettings v;auto read=[&](const wchar_t* key,int def){return static_cast<int>(GetPrivateProfileIntW(L"ProGeneral",key,def,path.c_str()));};
-        v.autoStart=IsProAutoStartEnabled();v.alwaysOnTop=read(L"AlwaysOnTop",1)!=0;v.lockPosition=read(L"LockPosition",0)!=0;v.hideInFullscreen=read(L"HideInFullscreen",1)!=0;v.rememberPosition=read(L"RememberPosition",1)!=0;v.reduceMotion=read(L"ReduceMotion",0)!=0;
-        const UINT mods=read(L"HotkeyModifiers",MOD_CONTROL|MOD_ALT),key=read(L"HotkeyKey",'I');if(IsValidProHotkey(mods,key)){v.hotkeyModifiers=mods;v.hotkeyKey=key;}
-        v.positionValid=v.rememberPosition&&read(L"PositionValid",0)!=0;v.positionX=std::clamp(read(L"PositionX",0),-1000000,1000000);v.positionY=std::clamp(read(L"PositionY",0),-1000000,1000000);v.savedDpi=std::clamp(read(L"PositionDpi",96),48,768);return v;
+
+    /**
+     * @brief 读取 Pro 专业版的常规系统行为设置
+     */
+    inline ProGeneralSettings LoadProGeneral(const std::wstring& path = GetConfigFilePath()) {
+        ProGeneralSettings v;
+        auto read = [&](const wchar_t* key, int def) {
+            return static_cast<int>(GetPrivateProfileIntW(L"ProGeneral", key, def, path.c_str()));
+        };
+
+        v.autoStart = IsProAutoStartEnabled();
+        v.alwaysOnTop = read(L"AlwaysOnTop", 1) != 0;
+        v.lockPosition = read(L"LockPosition", 0) != 0;
+        v.hideInFullscreen = read(L"HideInFullscreen", 1) != 0;
+        v.rememberPosition = read(L"RememberPosition", 1) != 0;
+        v.reduceMotion = read(L"ReduceMotion", 0) != 0;
+
+        // 读取快捷键设置并做合法性校验
+        const UINT mods = read(L"HotkeyModifiers", MOD_CONTROL | MOD_ALT);
+        const UINT key = read(L"HotkeyKey", 'I');
+        if (IsValidProHotkey(mods, key)) {
+            v.hotkeyModifiers = mods;
+            v.hotkeyKey = key;
+        }
+
+        // 读取上次记忆的屏幕坐标
+        v.positionValid = v.rememberPosition && read(L"PositionValid", 0) != 0;
+        v.positionX = std::clamp(read(L"PositionX", 0), -1000000, 1000000);
+        v.positionY = std::clamp(read(L"PositionY", 0), -1000000, 1000000);
+        v.savedDpi = std::clamp(read(L"PositionDpi", 96), 48, 768);
+        return v;
     }
-    inline bool SaveProGeneral(const ProGeneralSettings& v,const std::wstring& path=GetConfigFilePath()) {
-        bool ok=true;auto write=[&](const wchar_t* key,int value){if(!WritePrivateProfileStringW(L"ProGeneral",key,std::to_wstring(value).c_str(),path.c_str()))ok=false;};
-        write(L"AlwaysOnTop",v.alwaysOnTop);write(L"LockPosition",v.lockPosition);write(L"HideInFullscreen",v.hideInFullscreen);write(L"RememberPosition",v.rememberPosition);write(L"ReduceMotion",v.reduceMotion);
-        write(L"HotkeyModifiers",v.hotkeyModifiers);write(L"HotkeyKey",v.hotkeyKey);write(L"PositionValid",v.rememberPosition&&v.positionValid);write(L"PositionX",v.positionX);write(L"PositionY",v.positionY);write(L"PositionDpi",v.savedDpi);return ok;
+
+    /**
+     * @brief 保存 Pro 专业版的常规系统行为设置到 ini 文件
+     */
+    inline bool SaveProGeneral(const ProGeneralSettings& v, const std::wstring& path = GetConfigFilePath()) {
+        bool ok = true;
+        auto write = [&](const wchar_t* key, int value) {
+            if (!WritePrivateProfileStringW(L"ProGeneral", key, std::to_wstring(value).c_str(), path.c_str())) ok = false;
+        };
+
+        write(L"AlwaysOnTop", v.alwaysOnTop);
+        write(L"LockPosition", v.lockPosition);
+        write(L"HideInFullscreen", v.hideInFullscreen);
+        write(L"RememberPosition", v.rememberPosition);
+        write(L"ReduceMotion", v.reduceMotion);
+        write(L"HotkeyModifiers", v.hotkeyModifiers);
+        write(L"HotkeyKey", v.hotkeyKey);
+        write(L"PositionValid", v.rememberPosition && v.positionValid);
+        write(L"PositionX", v.positionX);
+        write(L"PositionY", v.positionY);
+        write(L"PositionDpi", v.savedDpi);
+        return ok;
     }
 
     // 把主配置写回 config.ini。

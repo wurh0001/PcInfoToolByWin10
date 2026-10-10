@@ -1,5 +1,6 @@
 # Explicit lists keep unreviewed/experimental files out of production targets.
 set(PCINFO_CORE_SOURCES
+    src/core/diagnostics/PerformanceTrace.h
     src/core/config/ConfigManager.h
     src/core/config/ProGeneralSettings.h
     src/core/metrics/MetricsSnapshot.h

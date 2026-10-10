@@ -1,3 +1,8 @@
+/*
+ * 模块说明：Pro 嵌入图标资源表
+ * RCDATA 将 PNG 数据放入 exe，资源 ID 必须与 ProOverviewVisuals::Icon 保持对应。
+ * 运行时 FindResource/LoadResource 获取数据，再由 WIC 解码；无需从 Release 外另找图标。
+ */
 #include <windows.h>
 201 RCDATA "thermometer.png"
 202 RCDATA "expand.png"

@@ -1,3 +1,8 @@
+/*
+ * 模块说明：颜色主题与语义调色板
+ * ThemePreset 选择配色，Palette 为背景、边框、文字和各指标提供语义颜色。
+ * D2D1_COLOR_F 使用 0..1 的 RGBA 分量；透明度是 alpha，不是文本字符串或百分比整数。
+ */
 #pragma once
 #include <d2d1.h>
 #include <string>
@@ -46,6 +51,9 @@ namespace Theme {
         bool isTranslucent = false; // 是否启用超高透磨砂冰雾质感
     };
 
+    /**
+     * 按枚举生成完整语义调色板，调用方按用途取色而非重复硬编码。
+     */
     inline Palette GetPresetPalette(ThemePreset preset) {
         switch (preset) {
         case ThemePreset::TranslucentGlass: {

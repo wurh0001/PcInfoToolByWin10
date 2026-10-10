@@ -1,3 +1,12 @@
+/*
+ * 模块说明：Pro 详情、概览和设置页面实现
+ * 显示流程：选择模式 → 计算布局与定位 → 准备画布/画笔 → 绘制 → 提交透明窗口。
+ * 事件流程：WndProc 接收消息 → 命中或键盘导航 → 修改状态 → 请求重绘/保存设置。
+ * 大量坐标为 DIP；屏幕位置是像素，滚动和动画又会改变局部坐标，转换必须保持一致。
+ * 此文件是界面组合层，硬件查询在采集器；图形库内部缓存大小需实测，不能靠代码行数估计。
+ */
+#include "core/diagnostics/PerformanceTrace.h"
+#include "ui/platform/ReadOnlyInput.h"
 #include "pro/windows/ProDashboardWindow.h"
 #include "pro/interaction/ProWindowBehavior.h"
 #include "ui/platform/DpiHelper.h"
@@ -13,6 +22,9 @@
 static const wchar_t* kProDashboardClassName = L"PcInfoToolProDashboardClass";
 
 template <typename T>
+/**
+ * 对非空 COM 指针调用 Release 后置空；适用于接口指针，不用于普通 new 对象。
+ */
 inline void SafeRelease(T** ppT) {
     if (ppT && *ppT) {
         (*ppT)->Release();
@@ -21,6 +33,7 @@ inline void SafeRelease(T** ppT) {
 }
 
 ProDashboardWindow::ProDashboardWindow() {
+    // C++ 对象先保存默认布局，尚未创建 HWND 或大画布；真正资源由 Create/Render 准备。
     m_dipWidth = 360.0f;
     m_dipHeight = 284.0f;
 }
@@ -31,6 +44,9 @@ ProDashboardWindow::~ProDashboardWindow() {
     ReleaseBrushes();
 }
 
+/**
+ * 释放当前绘图目标关联的画笔和相应资源，清空指针以便下次重新创建。
+ */
 void ProDashboardWindow::ReleaseBrushes() {
     auto SafeRelease = [](auto** pp) {
         if (*pp) { (*pp)->Release(); *pp = nullptr; }
@@ -54,7 +70,28 @@ void ProDashboardWindow::ReleaseBrushes() {
     SafeRelease(&m_pGridBrush);
 }
 
-void ProDashboardWindow::EnsureBrushes(ID2D1DCRenderTarget* rt) {
+// 隐藏后延迟释放绘图资源：短时间切页可复用，长期隐藏则回收。
+// Release 释放资源引用；系统或共享工厂可能保留缓存，工作集不一定立即下降。
+/**
+ * 持续隐藏后释放可重建的绘图资源；重新打开时由渲染路径恢复。
+ */
+void ProDashboardWindow::ReleaseDormantGraphics() {
+    if(m_hwnd)KillTimer(m_hwnd,75);
+    if(m_visible||m_graphicsSuspended)return;
+    pcinfo::diagnostics::MemoryEvent("dashboard.release.begin");
+    ReleaseBrushes();
+    m_overviewVisuals.ReleaseDormantResources();
+    m_renderer.Cleanup();
+    m_graphicsSuspended=true;
+    pcinfo::diagnostics::MemoryEvent("dashboard.release.ready");
+}
+
+// 画笔属于特定绘图目标，创建后复用；目标释放时也需释放画笔，不能跨目标混用。
+/**
+ * 首次使用或重建目标后创建画笔，已有可用资源时复用。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ */
+void ProDashboardWindow::EnsureBrushes(ID2D1RenderTarget* rt) {
     if (m_pBgBrush) return;
 
     // Theme palette matching Figma tokens (Pure White & Light Glass)
@@ -95,7 +132,13 @@ void ProDashboardWindow::EnsureBrushes(ID2D1DCRenderTarget* rt) {
     rt->CreateSolidColorBrush(D2D1::ColorF(0.761f, 0.796f, 0.851f, 0.40f), &m_pGridBrush);
 }
 
+/**
+ * 创建窗口及其必要资源；成功返回 true，失败由调用方处理，不等于开始消息循环。
+ */
 bool ProDashboardWindow::Create() {
+    if(m_hwnd)return true;
+    pcinfo::diagnostics::MemoryEvent("dashboard.create.begin");
+    pcinfo::diagnostics::MemoryScope memory("dashboard.create.ready");
     WNDCLASSEXW wc = { sizeof(WNDCLASSEXW) };
     wc.lpfnWndProc = WndProc;
     wc.hInstance = GetModuleHandleW(NULL);
@@ -104,7 +147,7 @@ bool ProDashboardWindow::Create() {
     RegisterClassExW(&wc);
 
     HWND hDesk = GetDesktopWindow();
-    m_dpiScale = DpiHelper::GetScaleForWindow(hDesk);
+    m_dpiScale = DpiHelper::GetScaleForWindow(m_barOwner ? m_barOwner : hDesk);
     m_pixelWidth = static_cast<int>(m_dipWidth * m_dpiScale + 0.5f);
     m_pixelHeight = static_cast<int>(m_dipHeight * m_dpiScale + 0.5f);
 
@@ -118,7 +161,9 @@ bool ProDashboardWindow::Create() {
     );
 
     if (!m_hwnd) return false;
+    DisableReadOnlyWindowIme(m_hwnd);
 
+    m_renderer.SetSurfaceReuse(true);
     if (!m_renderer.Initialize(m_hwnd, m_pixelWidth, m_pixelHeight)) {
         return false;
     }
@@ -127,6 +172,9 @@ bool ProDashboardWindow::Create() {
     return true;
 }
 
+/**
+ * 根据模块返回详情卡片的逻辑高度，供布局计算使用。
+ */
 float ProDashboardWindow::GetDetailCardHeight(int mod) {
     switch (mod) {
     case Module_CPU:     return 340.0f; // 355 + 4 + 340 = 699 DIP
@@ -139,7 +187,10 @@ float ProDashboardWindow::GetDetailCardHeight(int mod) {
     }
 }
 
-void ProDashboardWindow::UpdateDimensionsAndPosition(bool applyWindow) {
+/**
+ * 依据模式、布局和动画计算窗口尺寸/位置，必要时同步 Win32 窗口。
+ */
+void ProDashboardWindow::UpdateDimensionsAndPosition(bool applyWindow, bool preserveZOrder) {
     float h = 0.0f;
     if (m_mode == Mode_DirectTemp) {
         h = 289.0f; // Figma 236:2468 (360 x 289)
@@ -218,7 +269,7 @@ void ProDashboardWindow::UpdateDimensionsAndPosition(bool applyWindow) {
     if (newPixelH != m_pixelHeight || newPixelW != m_pixelWidth) {
         m_pixelHeight = newPixelH;
         m_pixelWidth = newPixelW;
-        m_renderer.Resize(m_pixelWidth, m_pixelHeight);
+        if(!m_graphicsSuspended)m_renderer.Resize(m_pixelWidth, m_pixelHeight);
         ReleaseBrushes();
     }
 
@@ -236,18 +287,34 @@ void ProDashboardWindow::UpdateDimensionsAndPosition(bool applyWindow) {
         posX=placement.x-shadowPixels;
         posY=placement.y-shadowPixels;
 
-        SetWindowPos(m_hwnd, m_settings.general.alwaysOnTop?HWND_TOPMOST:HWND_NOTOPMOST, posX, posY, m_pixelWidth, m_pixelHeight, SWP_NOACTIVATE);
+        RECT current{};GetWindowRect(m_hwnd,&current);
+        const bool sameSize=current.right-current.left==m_pixelWidth&&current.bottom-current.top==m_pixelHeight;
+        if(!preserveZOrder||!sameSize||current.left!=posX||current.top!=posY)
+            SetWindowPos(m_hwnd, m_settings.general.alwaysOnTop?HWND_TOPMOST:HWND_NOTOPMOST, posX, posY, m_pixelWidth, m_pixelHeight,
+                SWP_NOACTIVATE|(preserveZOrder?SWP_NOZORDER:0)|(sameSize?SWP_NOSIZE:0));
     }
 }
 
+/**
+ * 悬浮条移动时同步详情位置；尺寸不变时尽量复用现有画面。
+ * @param barRectDip 悬浮条锚点；名称含 Dip，实际屏幕坐标转换以实现为准。
+ * @param dpi DPI 缩放比例，1 表示 96 DPI。
+ */
 void ProDashboardWindow::FollowBar(const RECT& barRectDip,float dpi) {
+    pcinfo::diagnostics::Scope perfScope("ProDashboardWindow::FollowBar");
+    const bool wasAnimating=m_panelMotion.active;
+    const float previousDpi=m_dpiScale,previousHeight=m_dipHeight,previousScroll=m_cpuScroll;
+    const int previousWidth=m_pixelWidth,previousPixelHeight=m_pixelHeight;
     CancelPanelMotion();
     if(dpi>0)m_dpiScale=dpi;
     m_anchorBarRectDip = barRectDip;
     m_cpuPlacementValid=false;
     if (IsPureWhite() || m_mode==Mode_Settings) {
-        UpdateDimensionsAndPosition();
-        if(m_visible)Render();
+        UpdateDimensionsAndPosition(true,true);
+        // Moving a layered window reuses its existing surface. Redraw only
+        // when placement changed content geometry or interrupted an animation.
+        if(m_visible&&(wasAnimating||previousDpi!=m_dpiScale||previousHeight!=m_dipHeight||
+            previousScroll!=m_cpuScroll||previousWidth!=m_pixelWidth||previousPixelHeight!=m_pixelHeight))Render();
         return;
     }
     if (m_anchorBarRectDip.right > 0 && m_hwnd) {
@@ -266,7 +333,12 @@ void ProDashboardWindow::FollowBar(const RECT& barRectDip,float dpi) {
     }
 }
 
+/**
+ * 依据锚点矩形显示窗口；具体屏幕定位与 DPI 转换在实现内完成。
+ * @param barRectDip 悬浮条锚点；名称含 Dip，实际屏幕坐标转换以实现为准。
+ */
 void ProDashboardWindow::ShowNear(const RECT& barRectDip) {
+    if(!m_hwnd&&!Create())return;
     CancelPanelMotion();
     if(!m_visible)m_cpuPlacementValid=false;
     m_anchorBarRectDip = barRectDip;
@@ -277,7 +349,12 @@ void ProDashboardWindow::ShowNear(const RECT& barRectDip) {
     Render();
 }
 
+/**
+ * 选择独立指标卡片模式，再定位并显示，避免重复保留概览标题条。
+ * @param barRectDip 悬浮条锚点；名称含 Dip，实际屏幕坐标转换以实现为准。
+ */
 void ProDashboardWindow::ShowDirectModule(WindowMode directMode, const RECT& barRectDip) {
+    if(!m_hwnd&&!Create())return;
     CancelPanelMotion();
     if(!m_visible)m_cpuPlacementValid=false;
     m_diskMenuOpen=false;
@@ -296,10 +373,18 @@ void ProDashboardWindow::ShowDirectModule(WindowMode directMode, const RECT& bar
     Render();
 }
 
+/**
+ * 打开独立 CPU 温度卡片，复用详情窗口而不创建新的采集线程。
+ * @param barRectDip 悬浮条锚点；名称含 Dip，实际屏幕坐标转换以实现为准。
+ */
 void ProDashboardWindow::ShowCpuTempDirect(const RECT& barRectDip) {
     ShowDirectModule(Mode_DirectTemp, barRectDip);
 }
 
+/**
+ * 进入设置页面，保留返回所需的页面状态。
+ * @param barRectDip 悬浮条锚点；名称含 Dip，实际屏幕坐标转换以实现为准。
+ */
 void ProDashboardWindow::ShowSettings(const RECT& barRectDip) {
     if(m_visible&&m_mode==Mode_Settings){ReturnFromSettings();return;}
     if(m_mode!=Mode_Settings) {m_settingsReturnValid=m_visible;m_settingsReturnMode=m_mode;m_settingsReturnModule=m_expandedModule;m_settingsReturnScroll=m_cpuScroll;m_settingsReturnLayoutMode=m_settings.layoutMode;m_settingsReturnGeometry=m_panelMotion.active?m_panelMotion.to:MotionLayout();}
@@ -307,7 +392,12 @@ void ProDashboardWindow::ShowSettings(const RECT& barRectDip) {
     ShowDirectModule(Mode_Settings, barRectDip);
 }
 
+/**
+ * 进入概览模式并指定展开模块，计算布局后显示。
+ * @param barRectDip 悬浮条锚点；名称含 Dip，实际屏幕坐标转换以实现为准。
+ */
 void ProDashboardWindow::ShowFullDashboard(AccordionModule mod, const RECT& barRectDip) {
+    if(!m_hwnd&&!Create())return;
     if(m_visible&&m_mode==Mode_FullAccordion&&EqualRect(&barRectDip,&m_anchorBarRectDip)){TransitionModule(mod);return;}
     CancelPanelMotion();
     if(!m_visible)m_cpuPlacementValid=false;
@@ -323,6 +413,10 @@ void ProDashboardWindow::ShowFullDashboard(AccordionModule mod, const RECT& barR
     Render();
 }
 
+/**
+ * 依据当前显示模式展开或收起概览，保持悬浮条状态同步。
+ * @param barRectDip 悬浮条锚点；名称含 Dip，实际屏幕坐标转换以实现为准。
+ */
 void ProDashboardWindow::ToggleDashboard(const RECT& barRectDip) {
     if (m_visible && m_mode == Mode_FullAccordion) {
         Hide();
@@ -331,7 +425,14 @@ void ProDashboardWindow::ToggleDashboard(const RECT& barRectDip) {
     }
 }
 
+/**
+ * 隐藏当前窗口并更新交互状态；隐藏本身并不等于销毁所有 C++ 对象。
+ */
 void ProDashboardWindow::Hide() {
+    pcinfo::diagnostics::MemoryEvent("dashboard.hide");
+    m_overviewVisuals.ReportMemory();
+    CommitSliderSettings();
+    if(m_interactionRenderPending){KillTimer(m_hwnd,74);m_interactionRenderPending=false;}
     CancelPanelMotion();
     WatchOutsideClicks(false);
     m_settingsReturnValid=false;
@@ -342,14 +443,22 @@ void ProDashboardWindow::Hide() {
     m_visible = false;
     m_cpuPlacementValid=false;m_cpuKeyboardFocus=false;m_hoveredCpuCore=-1;m_focusedCpuCore=-1;m_cpuScroll=0;
     ShowWindow(m_hwnd, SW_HIDE);
+    // 定时器 75 用于隐藏 5 秒后的资源释放；保留短暂切页所需资源，减少重建卡顿。
+    if(m_hwnd&&!m_graphicsSuspended)SetTimer(m_hwnd,75,5000,nullptr);
 }
 
+/**
+ * 更新固定状态，影响外部点击是否收起窗口。
+ */
 void ProDashboardWindow::SetPinned(bool pin) {
     CancelPanelMotion();
     m_isPinned = pin;
     UpdateDimensionsAndPosition();
     Render();
 }
+/**
+ * 恢复进入设置前的页面状态并重新显示。
+ */
 void ProDashboardWindow::ReturnFromSettings() {
     if(!m_settingsReturnValid){Hide();return;}
     m_mode=m_settingsReturnMode;m_expandedModule=m_settingsReturnModule;m_cpuScroll=m_settingsReturnScroll;
@@ -360,27 +469,44 @@ void ProDashboardWindow::ReturnFromSettings() {
         if(!SetTimer(m_hwnd,73,16,nullptr)){CancelPanelMotion();UpdateDimensionsAndPosition();}}
     Render();
 }
+/**
+ * 调整滚动位置，让键盘焦点所在设置控件出现在可视区域。
+ */
 void ProDashboardWindow::EnsureSettingsFocusVisible(D2D1_RECT_F r) {
     if(m_cpuFullHeight<=m_dipHeight||r.right<=r.left)return;
     if(r.top<70)ScrollCpu(r.top-70);
     else if(r.bottom>m_dipHeight-5)ScrollCpu(r.bottom-(m_dipHeight-5));
 }
+/**
+ * 按层级关闭当前浮层、编辑状态或页面，不把所有关闭操作都当退出应用。
+ */
 void ProDashboardWindow::CloseTopLayer() {
     if(m_diskMenuOpen){m_diskMenuOpen=false;Render();return;}
     if(m_mode==Mode_Settings){ReturnFromSettings();return;}
     Hide();
 }
+/**
+ * 处理窗口外点击；是否收起取决于固定和当前交互状态。
+ */
 void ProDashboardWindow::OnOutsideClick() {
     if(!m_visible||m_settingsMenuActive||m_indicatorDragging>=0||m_sliderDragging)return;
     if(m_diskMenuOpen){m_diskMenuOpen=false;Render();return;}
     if(!m_isPinned)CloseTopLayer();
 }
+/**
+ * 安装或撤销外部点击监听，隐藏窗口时避免留下无用钩子。
+ */
 void ProDashboardWindow::WatchOutsideClicks(bool watch) {
     if(!watch){if(m_mouseHook)UnhookWindowsHookEx(m_mouseHook);m_mouseHook=nullptr;if(s_mouseWatcher==this)s_mouseWatcher=nullptr;return;}
     if(m_mouseHook)return;
     s_mouseWatcher=this;
     m_mouseHook=SetWindowsHookExW(WH_MOUSE_LL,OutsideMouseProc,GetModuleHandleW(nullptr),0);
 }
+/**
+ * 鼠标钩子回调：检测窗口外点击，并把后续消息继续传给钩子链。
+ * @param wParam 消息附加参数，含义随 msg 改变。
+ * @param lParam 消息附加参数，鼠标坐标等需按消息格式解码。
+ */
 LRESULT CALLBACK ProDashboardWindow::OutsideMouseProc(int code,WPARAM wParam,LPARAM lParam) {
     auto* panel=s_mouseWatcher;
     if(code==HC_ACTION&&panel&&panel->m_visible&&(wParam==WM_LBUTTONDOWN||wParam==WM_RBUTTONDOWN||wParam==WM_MBUTTONDOWN)) {
@@ -396,10 +522,16 @@ LRESULT CALLBACK ProDashboardWindow::OutsideMouseProc(int code,WPARAM wParam,LPA
     return CallNextHookEx(nullptr,code,wParam,lParam);
 }
 
+/**
+ * 请求展开或收起对应模块，具体过渡由 TransitionModule 处理。
+ */
 void ProDashboardWindow::ExpandModule(AccordionModule mod) {
     TransitionModule(mod);
 }
 
+/**
+ * 把当前页面状态转换为动画布局数据，不复制硬件采样历史。
+ */
 ProPanelMotion::Layout ProDashboardWindow::MotionLayout() const {
     ProPanelMotion::Layout out;out.height=m_dipHeight;out.expanded=m_expandedModule!=Module_None?1.f:0.f;
     const int mod=m_expandedModule;const bool compact=m_settings.layoutMode==1;
@@ -423,17 +555,26 @@ ProPanelMotion::Layout ProDashboardWindow::MotionLayout() const {
     return out;
 }
 
+/**
+ * 停止正在进行的布局动画，清理动画驱动状态。
+ */
 void ProDashboardWindow::CancelPanelMotion() {
     m_panelMotion.active=false;
     if(m_hwnd)KillTimer(m_hwnd,73);
 }
 
+/**
+ * 判断当前设置和页面是否允许动画，例如减少动态效果时禁用。
+ */
 bool ProDashboardWindow::PanelMotionAllowed() const {
     BOOL systemAnimation=TRUE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&systemAnimation,0);
     return m_visible&&IsWhiteOverview()&&!IsDisconnectedDisk()&&!m_settings.general.reduceMotion&&systemAnimation;
 }
 
+/**
+ * 从现有布局启动到目标模块的过渡，或直接切换到最终布局。
+ */
 void ProDashboardWindow::TransitionModule(AccordionModule mod) {
     const bool animate=PanelMotionAllowed()&&!(mod==Module_Disk&&m_diskDisconnected);
     const bool wasAnimating=m_panelMotion.active;
@@ -446,6 +587,9 @@ void ProDashboardWindow::TransitionModule(AccordionModule mod) {
     if(m_visible)Render();
 }
 
+/**
+ * 推进一帧动画，更新几何布局并在结束时停止驱动。
+ */
 void ProDashboardWindow::TickPanelMotion() {
     if(!m_panelMotion.active)return;
     m_panelMotion.Tick(GetTickCount64());
@@ -453,6 +597,10 @@ void ProDashboardWindow::TickPanelMotion() {
     UpdateDimensionsAndPosition();Render();
 }
 
+/**
+ * 复制采集快照到窗口状态；调用方负责提供有效数据，不在这里执行硬件查询。
+ * @param snapshot 采集结果；窗口保存副本，避免直接依赖采集线程可变数据。
+ */
 void ProDashboardWindow::UpdateSnapshot(const MetricsSnapshot& snapshot) {
     const auto previousCores = m_snapshot.cpuCoreUsage.size();
     const bool wasDisconnected=m_diskDisconnected;
@@ -472,7 +620,13 @@ void ProDashboardWindow::UpdateSnapshot(const MetricsSnapshot& snapshot) {
     }
 }
 
-void ProDashboardWindow::DrawChevron(ID2D1DCRenderTarget* rt, float cx, float cy, float size, bool isExpanded, ID2D1Brush* brush) {
+/**
+ * 用线段/几何绘制展开箭头，方向由参数或状态决定。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param brush 借用的颜色画笔，不转移所有权。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawChevron(ID2D1RenderTarget* rt, float cx, float cy, float size, bool isExpanded, ID2D1Brush* brush) {
     float half = size * 0.5f;
     if (isExpanded) {
         // Pointing up: ^
@@ -485,7 +639,12 @@ void ProDashboardWindow::DrawChevron(ID2D1DCRenderTarget* rt, float cx, float cy
     }
 }
 
-void ProDashboardWindow::DrawMiniSparkline(ID2D1DCRenderTarget* rt, float x, float y, float w, float h, const MetricHistory& history, float maxVal, D2D1_COLOR_F color) {
+/**
+ * 把历史点映射到指定矩形，按最大值缩放并处理无效点。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawMiniSparkline(ID2D1RenderTarget* rt, float x, float y, float w, float h, const MetricHistory& history, float maxVal, D2D1_COLOR_F color) {
     size_t count = history.Size();
     if (count < 2) {
         ID2D1SolidColorBrush* pB = nullptr;
@@ -554,7 +713,12 @@ void ProDashboardWindow::DrawMiniSparkline(ID2D1DCRenderTarget* rt, float x, flo
     pPath->Release();
 }
 
-void ProDashboardWindow::DrawSmoothWaveform(ID2D1DCRenderTarget* rt, float x, float y, float w, float h, const MetricHistory& history, float maxVal, D2D1_COLOR_F strokeCol, D2D1_COLOR_F fillCol) {
+/**
+ * 把历史点转换为平滑曲线与填充区域，控制点决定线条形状。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawSmoothWaveform(ID2D1RenderTarget* rt, float x, float y, float w, float h, const MetricHistory& history, float maxVal, D2D1_COLOR_F strokeCol, D2D1_COLOR_F fillCol) {
     if (history.Size() < 2 || maxVal <= 0.0f) return;
 
     ID2D1Factory* pFactory = m_renderer.GetD2DFactory();
@@ -658,7 +822,12 @@ void ProDashboardWindow::DrawSmoothWaveform(ID2D1DCRenderTarget* rt, float x, fl
     pLinePath->Release();
 }
 
-void ProDashboardWindow::DrawDualNetworkWaveform(ID2D1DCRenderTarget* rt, float x, float y, float w, float h) {
+/**
+ * 在同一区域绘制上/下行历史曲线，用颜色区分方向。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawDualNetworkWaveform(ID2D1RenderTarget* rt, float x, float y, float w, float h) {
     // 1. Chart horizontal grid guidelines (Figma spec: Y = 8, 53, 98 within 116h chart, width 364, stroke 1.0)
     ID2D1SolidColorBrush* pGridLine = nullptr;
     rt->CreateSolidColorBrush(D2D1::ColorF(0.761f, 0.796f, 0.851f, 0.60f), &pGridLine);
@@ -911,7 +1080,14 @@ void ProDashboardWindow::DrawDualNetworkWaveform(ID2D1DCRenderTarget* rt, float 
 }
 
 
-void ProDashboardWindow::DrawHeader(ID2D1DCRenderTarget* rt, float& curY, float width) {
+/**
+ * 绘制页头与操作按钮，并推进后续内容的纵向起点。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param curY 通过引用传入的纵向游标，绘完后可供下一模块继续排列。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawHeader(ID2D1RenderTarget* rt, float& curY, float width) {
     IDWriteFactory* pDwFactory = m_renderer.GetDWriteFactory();
     IDWriteTextFormat* pFontTitle = nullptr;
     IDWriteTextFormat* pFontBadge = nullptr;
@@ -1028,7 +1204,12 @@ void ProDashboardWindow::DrawHeader(ID2D1DCRenderTarget* rt, float& curY, float 
     curY = 42.0f; // Metric rows start at Y=42 in panel relative (Figma 138:927)
 }
 
-void ProDashboardWindow::DrawCompactCapsule(ID2D1DCRenderTarget* rt, AccordionModule mod, float x, float y, float w, float h) {
+/**
+ * 绘制紧凑布局的一枚指标胶囊，复用当前快照。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawCompactCapsule(ID2D1RenderTarget* rt, AccordionModule mod, float x, float y, float w, float h) {
     D2D1_RECT_F rect = D2D1::RectF(x, y, x + w, y + h);
     m_moduleRects[mod] = rect;
 
@@ -1112,7 +1293,13 @@ void ProDashboardWindow::DrawCompactCapsule(ID2D1DCRenderTarget* rt, AccordionMo
     }
 }
 
-void ProDashboardWindow::DrawCompactGrid(ID2D1DCRenderTarget* rt, const std::vector<AccordionModule>& mods, float& curY, float contentX, float contentW) {
+/**
+ * 排列并绘制紧凑胶囊网格，计算后续内容起点。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param curY 通过引用传入的纵向游标，绘完后可供下一模块继续排列。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawCompactGrid(ID2D1RenderTarget* rt, const std::vector<AccordionModule>& mods, float& curY, float contentX, float contentW) {
     size_t n = mods.size();
     if (n == 0) return;
 
@@ -1138,7 +1325,14 @@ void ProDashboardWindow::DrawCompactGrid(ID2D1DCRenderTarget* rt, const std::vec
     }
 }
 
-void ProDashboardWindow::DrawModuleCard(ID2D1DCRenderTarget* rt, AccordionModule mod, float& curY, float width) {
+/**
+ * 绘制概览模块卡片，按展开状态选择概要或详情内容。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param curY 通过引用传入的纵向游标，绘完后可供下一模块继续排列。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawModuleCard(ID2D1RenderTarget* rt, AccordionModule mod, float& curY, float width) {
     bool isExpanded = (m_expandedModule == mod);
     // Figma 360 面板: 内容列宽 338, startX = 11, 行高 30, gap 6
     float cardW = 338.0f;
@@ -1306,7 +1500,12 @@ void ProDashboardWindow::DrawModuleCard(ID2D1DCRenderTarget* rt, AccordionModule
     if (pFontVal) pFontVal->Release();
 }
 
-void ProDashboardWindow::DrawCpuExpanded(ID2D1DCRenderTarget* rt, float x, float y, float w, float h) {
+/**
+ * 绘制CPU展开详情；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawCpuExpanded(ID2D1RenderTarget* rt, float x, float y, float w, float h) {
     IDWriteFactory* pDwFactory = m_renderer.GetDWriteFactory();
     if (!pDwFactory) return;
 
@@ -1577,7 +1776,12 @@ void ProDashboardWindow::DrawCpuExpanded(ID2D1DCRenderTarget* rt, float x, float
 }
 
 
-void ProDashboardWindow::DrawNetworkExpanded(ID2D1DCRenderTarget* rt, float x, float y, float w, float h) {
+/**
+ * 绘制网络展开详情；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawNetworkExpanded(ID2D1RenderTarget* rt, float x, float y, float w, float h) {
     IDWriteFactory* pDwFactory = m_renderer.GetDWriteFactory();
     if (!pDwFactory) return;
 
@@ -1818,7 +2022,12 @@ void ProDashboardWindow::DrawNetworkExpanded(ID2D1DCRenderTarget* rt, float x, f
 }
 
 
-void ProDashboardWindow::DrawGpuExpanded(ID2D1DCRenderTarget* rt, float x, float y, float w, float h) {
+/**
+ * 绘制GPU展开详情；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawGpuExpanded(ID2D1RenderTarget* rt, float x, float y, float w, float h) {
     IDWriteFactory* pDwFactory = m_renderer.GetDWriteFactory();
     if (!pDwFactory) return;
 
@@ -2188,7 +2397,12 @@ void ProDashboardWindow::DrawGpuExpanded(ID2D1DCRenderTarget* rt, float x, float
 }
 
 
-void ProDashboardWindow::DrawMemoryExpanded(ID2D1DCRenderTarget* rt, float x, float y, float w, float h) {
+/**
+ * 绘制内存展开详情；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawMemoryExpanded(ID2D1RenderTarget* rt, float x, float y, float w, float h) {
     IDWriteFactory* pDwFactory = m_renderer.GetDWriteFactory();
     if (!pDwFactory) return;
 
@@ -2608,7 +2822,12 @@ void ProDashboardWindow::DrawMemoryExpanded(ID2D1DCRenderTarget* rt, float x, fl
     SafeRelease(&pFontRowLabel);
     SafeRelease(&pFontRowVal);
 }
-void ProDashboardWindow::DrawDiskExpanded(ID2D1DCRenderTarget* rt, float x, float y, float w, float h) {
+/**
+ * 绘制磁盘展开详情；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawDiskExpanded(ID2D1RenderTarget* rt, float x, float y, float w, float h) {
     IDWriteFactory* pDwFactory = m_renderer.GetDWriteFactory();
     if (!pDwFactory) return;
 
@@ -3092,7 +3311,12 @@ void ProDashboardWindow::DrawDiskExpanded(ID2D1DCRenderTarget* rt, float x, floa
     SafeRelease(&pFontGroupRight);
     SafeRelease(&pFontFootnote);
 }
-void ProDashboardWindow::DrawSensorExpanded(ID2D1DCRenderTarget* rt, float x, float y, float w, float h) {
+/**
+ * 绘制传感器展开详情；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawSensorExpanded(ID2D1RenderTarget* rt, float x, float y, float w, float h) {
     IDWriteFactory* pDwFactory = m_renderer.GetDWriteFactory();
     if (!pDwFactory) return;
 
@@ -3488,7 +3712,14 @@ void ProDashboardWindow::DrawSensorExpanded(ID2D1DCRenderTarget* rt, float x, fl
     SafeRelease(&pFontGroupRight);
     SafeRelease(&pFontTip);
 }
-void ProDashboardWindow::DrawFooter(ID2D1DCRenderTarget* rt, float& curY, float width) {
+/**
+ * 绘制页脚信息与提示。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param curY 通过引用传入的纵向游标，绘完后可供下一模块继续排列。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawFooter(ID2D1RenderTarget* rt, float& curY, float width) {
     IDWriteFactory* pDwFactory = m_renderer.GetDWriteFactory();
     IDWriteTextFormat* pFontFoot = nullptr;
 
@@ -3588,7 +3819,14 @@ void ProDashboardWindow::DrawFooter(ID2D1DCRenderTarget* rt, float& curY, float 
     curY = footerY + footerH + 4.0f;
 }
 
-void ProDashboardWindow::DrawCpuTempDirect(ID2D1DCRenderTarget* rt, float width, float height) {
+/**
+ * 绘制CPU 温度独立详情页；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * @param height 目标高度，注意区分窗口像素尺寸与布局逻辑尺寸。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawCpuTempDirect(ID2D1RenderTarget* rt, float width, float height) {
     // 1. Ambient drop shadow for soft elevated floating feel (Figma panel 420 x 420, radius 20, border 1)
     D2D1_ROUNDED_RECT shadowR = D2D1::RoundedRect(D2D1::RectF(0.5f, 2.0f, width - 0.5f, height + 3.0f), 20.0f, 20.0f);
     ID2D1SolidColorBrush* pShadow = nullptr;
@@ -4009,7 +4247,14 @@ void ProDashboardWindow::DrawCpuTempDirect(ID2D1DCRenderTarget* rt, float width,
 // ==========================================
 // DIRECT CARD: CPU
 // ==========================================
-void ProDashboardWindow::DrawCpuDirect(ID2D1DCRenderTarget* rt, float width, float height) {
+/**
+ * 绘制CPU独立详情页；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * @param height 目标高度，注意区分窗口像素尺寸与布局逻辑尺寸。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawCpuDirect(ID2D1RenderTarget* rt, float width, float height) {
     // 1. Ambient drop shadow (420 x 420, radius 20)
     D2D1_ROUNDED_RECT shadowR = D2D1::RoundedRect(D2D1::RectF(0.5f, 2.0f, width - 0.5f, height + 3.0f), 20.0f, 20.0f);
     ID2D1SolidColorBrush* pShadow = nullptr;
@@ -4090,7 +4335,14 @@ void ProDashboardWindow::DrawCpuDirect(ID2D1DCRenderTarget* rt, float width, flo
 // ==========================================
 // DIRECT CARD: MEMORY
 // ==========================================
-void ProDashboardWindow::DrawMemoryDirect(ID2D1DCRenderTarget* rt, float width, float height) {
+/**
+ * 绘制内存独立详情页；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * @param height 目标高度，注意区分窗口像素尺寸与布局逻辑尺寸。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawMemoryDirect(ID2D1RenderTarget* rt, float width, float height) {
     // 1. Ambient drop shadow (420 x 420, radius 20)
     D2D1_ROUNDED_RECT shadowR = D2D1::RoundedRect(D2D1::RectF(0.5f, 2.0f, width - 0.5f, height + 3.0f), 20.0f, 20.0f);
     ID2D1SolidColorBrush* pShadow = nullptr;
@@ -4170,7 +4422,14 @@ void ProDashboardWindow::DrawMemoryDirect(ID2D1DCRenderTarget* rt, float width, 
 // ==========================================
 // DIRECT CARD: NETWORK
 // ==========================================
-void ProDashboardWindow::DrawNetworkDirect(ID2D1DCRenderTarget* rt, float width, float height) {
+/**
+ * 绘制网络独立详情页；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * @param height 目标高度，注意区分窗口像素尺寸与布局逻辑尺寸。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawNetworkDirect(ID2D1RenderTarget* rt, float width, float height) {
     // 1. Ambient drop shadow (420 x 420, radius 20)
     D2D1_ROUNDED_RECT shadowR = D2D1::RoundedRect(D2D1::RectF(0.5f, 2.0f, width - 0.5f, height + 3.0f), 20.0f, 20.0f);
     ID2D1SolidColorBrush* pShadow = nullptr;
@@ -4250,7 +4509,14 @@ void ProDashboardWindow::DrawNetworkDirect(ID2D1DCRenderTarget* rt, float width,
 // ==========================================
 // DIRECT CARD: GPU
 // ==========================================
-void ProDashboardWindow::DrawGpuDirect(ID2D1DCRenderTarget* rt, float width, float height) {
+/**
+ * 绘制GPU独立详情页；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * @param height 目标高度，注意区分窗口像素尺寸与布局逻辑尺寸。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawGpuDirect(ID2D1RenderTarget* rt, float width, float height) {
     // 1. Ambient drop shadow (420 x 420, radius 20)
     D2D1_ROUNDED_RECT shadowR = D2D1::RoundedRect(D2D1::RectF(0.5f, 2.0f, width - 0.5f, height + 3.0f), 20.0f, 20.0f);
     ID2D1SolidColorBrush* pShadow = nullptr;
@@ -4331,7 +4597,14 @@ void ProDashboardWindow::DrawGpuDirect(ID2D1DCRenderTarget* rt, float width, flo
 // ==========================================
 // DIRECT CARD: DISK
 // ==========================================
-void ProDashboardWindow::DrawDiskDirect(ID2D1DCRenderTarget* rt, float width, float height) {
+/**
+ * 绘制磁盘独立详情页；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * @param height 目标高度，注意区分窗口像素尺寸与布局逻辑尺寸。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawDiskDirect(ID2D1RenderTarget* rt, float width, float height) {
     // 1. Ambient drop shadow (420 x 420, radius 20)
     D2D1_ROUNDED_RECT shadowR = D2D1::RoundedRect(D2D1::RectF(0.5f, 2.0f, width - 0.5f, height + 3.0f), 20.0f, 20.0f);
     ID2D1SolidColorBrush* pShadow = nullptr;
@@ -4414,7 +4687,12 @@ void ProDashboardWindow::DrawDiskDirect(ID2D1DCRenderTarget* rt, float width, fl
 // Drop shadow: X=0, Y=8, Blur=24, Spread=0, #26385C alpha 10%
 // Layout: Padding Left/Right 16, Top/Bottom 12 -> Content starts at (17, 13), Width 388
 // ==========================================
-void ProDashboardWindow::DrawSettingsAppearance(ID2D1DCRenderTarget* rt) {
+/**
+ * 绘制外观设置控件并记录命中区域。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawSettingsAppearance(ID2D1RenderTarget* rt) {
     auto* dw=m_renderer.GetDWriteFactory();
     const bool dark=m_settings.themeMode==2 || (m_settings.themeMode==3&&SystemUsesDarkTheme()),glass=m_settings.themeMode==0;
     const auto primary=D2D1::ColorF(dark ? 0xE7EDF5 : 0x192739),muted=D2D1::ColorF(dark ? 0xA8B6C8 : 0x53657A),blue=D2D1::ColorF(dark ? 0x80B3FF : 0x266BCE);
@@ -4445,7 +4723,12 @@ void ProDashboardWindow::DrawSettingsAppearance(ID2D1DCRenderTarget* rt) {
     }
 }
 
-void ProDashboardWindow::DrawSettingsMonitoring(ID2D1DCRenderTarget* rt) {
+/**
+ * 绘制监控设置控件并记录命中区域。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawSettingsMonitoring(ID2D1RenderTarget* rt) {
     // Reuse the calibrated preferences shell; discard appearance-only content below the tabs.
     auto* dw=m_renderer.GetDWriteFactory();
     const bool dark=m_settings.themeMode==2||(m_settings.themeMode==3&&SystemUsesDarkTheme());
@@ -4475,6 +4758,9 @@ void ProDashboardWindow::DrawSettingsMonitoring(ID2D1DCRenderTarget* rt) {
     const auto focus=MonitoringFocusRect();if(focus.right>focus.left){b->SetColor(blue);rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(focus.left-1,focus.top-1,focus.right+1,focus.bottom+1),4,4),b.Get(),1);}
 }
 
+/**
+ * 把控件选项转换为监控设置字段，并通知保存/刷新。
+ */
 void ProDashboardWindow::ApplyMonitoringChoice(int control,int value) {
     if(control==0&&value>=0&&value<=2)m_settings.updateIntervalSec=value;
     else if(control==1&&value>=0&&value<=1)m_settings.tempUnit=value;
@@ -4484,6 +4770,9 @@ void ProDashboardWindow::ApplyMonitoringChoice(int control,int value) {
     if(m_onSettingsChanged)m_onSettingsChanged(m_settings);Render();
 }
 
+/**
+ * 处理监控页开关、下拉选项及指标排列的鼠标操作。
+ */
 bool ProDashboardWindow::OnMonitoringClick(float x,float y) {
     auto hit=[&](D2D1_RECT_F r){return r.right>r.left&&x>=r.left&&x<=r.right&&y>=r.top&&y<=r.bottom;};
     for(int i=0;i<2;++i)if(hit(m_monitoringHeaders[i])){m_monitoringGroup=m_monitoringGroup==i?-1:i;UpdateDimensionsAndPosition();Render();return true;}
@@ -4497,11 +4786,17 @@ bool ProDashboardWindow::OnMonitoringClick(float x,float y) {
     POINT p{static_cast<LONG>((controls[control].left+m_shadowApron)*m_dpiScale),static_cast<LONG>((controls[control].bottom+m_shadowApron)*m_dpiScale)};ClientToScreen(m_hwnd,&p);m_settingsMenuActive=true;int selected=TrackPopupMenuEx(menu,TPM_RETURNCMD|TPM_NONOTIFY,p.x,p.y,m_hwnd,nullptr);m_settingsMenuActive=false;DestroyMenu(menu);if(selected>0&&selected<=static_cast<int>(values.size()))ApplyMonitoringChoice(control,values[selected-1]);return true;
 }
 
+/**
+ * 拖动时根据纵向位置调整悬浮条指标顺序。
+ */
 void ProDashboardWindow::MoveMonitoringIndicator(float y) {
     if(m_indicatorDragging<0||m_settings.activeTab!=1||m_monitoringGroup!=0)return;
     int target=std::clamp(static_cast<int>((y+m_cpuScroll-125)/22),0,3);if(target==m_indicatorDragging)return;auto& order=m_settings.indicatorOrder;int value=order[m_indicatorDragging];if(target>m_indicatorDragging)for(int i=m_indicatorDragging;i<target;++i)order[i]=order[i+1];else for(int i=m_indicatorDragging;i>target;--i)order[i]=order[i-1];order[target]=value;m_indicatorDragging=target;Render();
 }
 
+/**
+ * 返回当前监控控件焦点矩形，用于绘制焦点和保持可见。
+ */
 D2D1_RECT_F ProDashboardWindow::MonitoringFocusRect() const {
     if(m_monitoringFocus==-10)return m_settingsDoneRect;
     if(m_monitoringFocus>=-9&&m_monitoringFocus<=-7)return m_tabRects[m_monitoringFocus+9];
@@ -4509,6 +4804,10 @@ D2D1_RECT_F ProDashboardWindow::MonitoringFocusRect() const {
     if(m_monitoringFocus>=2&&m_monitoringFocus<=5)return m_metricToggleRects[m_monitoringFocus-2];
     if(m_monitoringFocus==6)return m_intervalRect;if(m_monitoringFocus==7)return m_tempUnitRect;if(m_monitoringFocus==8)return m_highTempAlertRect;if(m_monitoringFocus==9)return m_monitoringDeviceRects[1];return {};
 }
+/**
+ * 处理监控页键盘焦点、选择和导航。
+ * @param key 虚拟键码，用于键盘导航或快捷键。
+ */
 bool ProDashboardWindow::OnMonitoringKey(UINT key,bool shift,bool alt) {
     if(m_mode!=Mode_Settings||m_settings.activeTab!=1)return false;
     std::vector<int> targets{-10,-9,-8,-7,0};if(m_monitoringGroup==0)for(int id:m_settings.indicatorOrder)targets.push_back(id+2);targets.push_back(1);if(m_monitoringGroup==1){targets.push_back(6);targets.push_back(7);targets.push_back(8);}if(!m_snapshot.physicalDisks.empty())targets.push_back(9);
@@ -4517,7 +4816,12 @@ bool ProDashboardWindow::OnMonitoringKey(UINT key,bool shift,bool alt) {
     if((key==VK_RETURN||key==VK_SPACE)&&m_monitoringFocus!=-1){auto r=MonitoringFocusRect();OnClick((r.left+r.right)/2,(r.top+r.bottom)/2);return true;}return false;
 }
 
-void ProDashboardWindow::DrawSettingsGeneral(ID2D1DCRenderTarget* rt) {
+/**
+ * 绘制常规设置、快捷键与错误提示，记录交互区域。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawSettingsGeneral(ID2D1RenderTarget* rt) {
     auto* dw=m_renderer.GetDWriteFactory();
     const bool dark=m_settings.themeMode==2||(m_settings.themeMode==3&&SystemUsesDarkTheme());
     const auto primary=D2D1::ColorF(dark?0xE7EDF5:0x192739),muted=D2D1::ColorF(dark?0xA8B6C8:0x53657A),subtle=D2D1::ColorF(dark?0xA8B6C8:0x64748B),blue=D2D1::ColorF(dark?0x80B3FF:0x266BCE);
@@ -4541,20 +4845,34 @@ void ProDashboardWindow::DrawSettingsGeneral(ID2D1DCRenderTarget* rt) {
     if(focus.right>focus.left){b->SetColor(blue);rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(focus.left-1,focus.top-1,focus.right+1,focus.bottom+1),4,4),b.Get(),1);}
 }
 
+/**
+ * 通过回调验证并应用常规设置，记录错误以便界面显示。
+ */
 bool ProDashboardWindow::CommitGeneral(ProGeneralSettings value) {
     std::wstring error;if(m_onGeneralChange&&!m_onGeneralChange(value,error)){m_generalError=error;Render();return false;}
     m_settings.general=value;m_generalError.clear();if(m_onSettingsChanged)m_onSettingsChanged(m_settings);Render();return true;
 }
+/**
+ * 组装新的快捷键设置交给常规设置提交路径，失败时保留错误提示。
+ * @param key 虚拟键码，用于键盘导航或快捷键。
+ */
 bool ProDashboardWindow::CommitGeneralHotkey(UINT modifiers,UINT key) {
     if(!IsValidProHotkey(modifiers,key)){m_generalError=L"请使用 Ctrl 或 Alt 加字母、数字或 F 键。";Render();return false;}
     auto value=m_settings.general;value.hotkeyModifiers=modifiers;value.hotkeyKey=key;
     if(!CommitGeneral(value))return false;m_hotkeyCapturing=false;Render();return true;
 }
+/**
+ * 依据点击位置匹配常规设置控件，触发切换或快捷键捕获。
+ */
 bool ProDashboardWindow::OnGeneralClick(float x,float y) {
     auto hit=[&](D2D1_RECT_F r){return r.right>r.left&&x>=r.left&&x<=r.right&&y>=r.top&&y<=r.bottom;};
     for(int i=0;i<6;++i)if(hit(m_generalToggleRects[i])){m_hotkeyCapturing=false;auto value=m_settings.general;bool* flags[]={&value.autoStart,&value.alwaysOnTop,&value.lockPosition,&value.hideInFullscreen,&value.rememberPosition,&value.reduceMotion};*flags[i]=!*flags[i];CommitGeneral(value);return true;}
     if(hit(m_generalHotkeyRect)){m_hotkeyCapturing=true;m_generalFocus=10;m_generalError.clear();if(m_hwnd)SetFocus(m_hwnd);Render();return true;}return false;
 }
+/**
+ * 处理常规设置的键盘导航、开关操作与快捷键捕获。
+ * @param key 虚拟键码，用于键盘导航或快捷键。
+ */
 bool ProDashboardWindow::OnGeneralKey(UINT key,bool shift,bool alt) {
     if(m_mode!=Mode_Settings||m_settings.activeTab!=2)return false;
     if(m_hotkeyCapturing){
@@ -4568,7 +4886,14 @@ bool ProDashboardWindow::OnGeneralKey(UINT key,bool shift,bool alt) {
     if((key==VK_RETURN||key==VK_SPACE)&&m_generalFocus>=0){D2D1_RECT_F r=m_generalFocus==0?m_settingsDoneRect:m_generalFocus<=3?m_tabRects[m_generalFocus-1]:m_generalFocus<=9?m_generalToggleRects[m_generalFocus-4]:m_generalHotkeyRect;OnClick((r.left+r.right)/2,(r.top+r.bottom)/2);return true;}return false;
 }
 
-void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, float height) {
+/**
+ * 组合设置页面的导航、当前页内容和反馈状态。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param width 目标宽度；布局绘制函数中通常是 DIP，窗口资源函数按实现使用像素。
+ * @param height 目标高度，注意区分窗口像素尺寸与布局逻辑尺寸。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawSettings(ID2D1RenderTarget* rt, float width, float height) {
     auto SafeRelease = [](auto** pp) {
         if (*pp) { (*pp)->Release(); *pp = nullptr; }
     };
@@ -5051,7 +5376,13 @@ void ProDashboardWindow::DrawSettings(ID2D1DCRenderTarget* rt, float width, floa
     SafeRelease(&pFontThemeBtn);
     SafeRelease(&pFontOpacPct);
 }
-void ProDashboardWindow::DrawWhiteCpuDetails(ID2D1DCRenderTarget* rt, bool standalone) {
+/**
+ * 绘制CPU详情内容；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param standalone 是否按独立卡片布局绘制。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawWhiteCpuDetails(ID2D1RenderTarget* rt, bool standalone) {
     D2D1_MATRIX_3X2_F original; rt->GetTransform(&original);
     const float dx = standalone ? -1.f : 0.f, dy = standalone ? -42.f : 0.f;
     rt->SetTransform(D2D1::Matrix3x2F::Translation(dx,dy)*original);
@@ -5145,7 +5476,9 @@ void ProDashboardWindow::DrawWhiteCpuDetails(ID2D1DCRenderTarget* rt, bool stand
         if (SUCCEEDED(m_renderer.GetD2DFactory()->CreateRoundedRectangleGeometry(
             D2D1::RoundedRect(D2D1::RectF(x+1,y+1,x+23,y+27),5,5),&clip))) {
             const float usage=std::isfinite(m_snapshot.cpuCoreUsage[i]) ? std::clamp(m_snapshot.cpuCoreUsage[i],0.0f,100.0f)/100 : 0.f;
-            // Height and opacity convey load; zero is truly empty, 100% fills the inner bucket.
+            // 填充高度和透明度表示负荷，裁剪层把矩形填充限制在圆角桶内部。
+            // ComPtr 自动释放接口引用；PushLayer/PopLayer 必须配对恢复绘图状态。
+            // 裁剪可能触发绘图库内部工作内存，成本不只是这个指针的大小。
             rt->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(),clip.Get()),nullptr);
             brush->SetColor(D2D1::ColorF(0x266BCE,.18f+.40f*usage));
             rt->FillRectangle(D2D1::RectF(x+1,y+27-26*usage,x+23,y+27),brush.Get());
@@ -5176,7 +5509,12 @@ void ProDashboardWindow::DrawWhiteCpuDetails(ID2D1DCRenderTarget* rt, bool stand
     rt->SetTransform(original);
 }
 
-void ProDashboardWindow::DrawWhiteTempDirect(ID2D1DCRenderTarget* rt) {
+/**
+ * 绘制温度独立详情页；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawWhiteTempDirect(ID2D1RenderTarget* rt) {
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
     rt->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF),&brush);if(!brush) return;
     auto* dw=m_renderer.GetDWriteFactory();
@@ -5257,7 +5595,12 @@ void ProDashboardWindow::DrawWhiteTempDirect(ID2D1DCRenderTarget* rt) {
     text(L"查看全部传感器  ›",m_allSensorsRect,11,17,DWRITE_FONT_WEIGHT_BOLD,D2D1::ColorF(m_allSensorsHover ? 0x1D4ED8 : 0x266BCE),DWRITE_TEXT_ALIGNMENT_TRAILING);
 }
 
-void ProDashboardWindow::DrawWhiteCpuDirect(ID2D1DCRenderTarget* rt) {
+/**
+ * 绘制CPU独立详情页；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawWhiteCpuDirect(ID2D1RenderTarget* rt) {
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
     rt->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF),&brush);if(!brush) return;
     m_overviewVisuals.Shadow(rt,D2D1::RectF(0,0,360,m_dipHeight),20,24,0,8,.07f);
@@ -5266,12 +5609,16 @@ void ProDashboardWindow::DrawWhiteCpuDirect(ID2D1DCRenderTarget* rt) {
     m_overviewVisuals.Text(rt,m_renderer.GetDWriteFactory(),L"CPU 占用",D2D1::RectF(11,5,349,29),16,24,DWRITE_FONT_WEIGHT_BOLD,D2D1::ColorF(0x192739));
     m_overviewLinkRect={}; // The direct-detail design has no fabricated footer link.
     D2D1_MATRIX_3X2_F original;rt->GetTransform(&original);
+    // 裁剪只显示卡片内的可视内容；平移模拟滚动，绘完必须恢复变换并 Pop 裁剪。
     rt->PushAxisAlignedClip(D2D1::RectF(11,33,349,m_dipHeight-5),D2D1_ANTIALIAS_MODE_ALIASED);
     rt->SetTransform(D2D1::Matrix3x2F::Translation(0,-m_cpuScroll)*original);
     DrawWhiteCpuDetails(rt,true);
     rt->SetTransform(original);rt->PopAxisAlignedClip();
     DrawCpuCorePeek(rt);
 }
+/**
+ * 用绘图时记录的核心矩形命中鼠标，返回核心索引或未命中。
+ */
 int ProDashboardWindow::HitCpuCore(float x,float y) const {
     if(!IsWhiteCpu()) return -1;
     if(y<(m_mode==Mode_DirectCpu ? 33.f : 50.f) || y>m_dipHeight-(m_mode==Mode_DirectCpu ? 5.f : 46.f)) return -1;
@@ -5281,6 +5628,10 @@ int ProDashboardWindow::HitCpuCore(float x,float y) const {
     }
     return -1;
 }
+/**
+ * 处理核心列表的键盘选择、焦点移动和相关交互。
+ * @param key 虚拟键码，用于键盘导航或快捷键。
+ */
 bool ProDashboardWindow::OnCpuKey(UINT key,bool shift) {
     if(m_panelMotion.active)return false;
     if(!IsWhiteCpu() || m_cpuCoreRects.empty() || m_snapshot.cpuCoreUsage.empty()) return false;
@@ -5303,6 +5654,9 @@ bool ProDashboardWindow::OnCpuKey(UINT key,bool shift) {
     else if(rect.bottom>bottom) m_cpuScroll=std::min(std::max(0.f,m_cpuFullHeight-m_dipHeight),m_cpuScroll+rect.bottom-bottom);
     if(m_visible) Render();return true;
 }
+/**
+ * 调整 CPU 详情的滚动偏移，并限制在内容范围内。
+ */
 void ProDashboardWindow::ScrollCpu(float delta) {
     if(m_panelMotion.active){CancelPanelMotion();UpdateDimensionsAndPosition();}
     if(!IsPureWhite()&&m_mode!=Mode_Settings) return;
@@ -5310,7 +5664,12 @@ void ProDashboardWindow::ScrollCpu(float delta) {
     m_cpuScroll=std::clamp(m_cpuScroll+delta,0.f,std::max(0.f,m_cpuFullHeight-m_dipHeight));
     m_hoveredCpuCore=-1;if(m_visible) Render();
 }
-void ProDashboardWindow::DrawCpuCorePeek(ID2D1DCRenderTarget* rt) {
+/**
+ * 绘制当前悬停或选中的逻辑核心提示信息。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawCpuCorePeek(ID2D1RenderTarget* rt) {
     const int core=m_cpuKeyboardFocus ? m_focusedCpuCore : m_hoveredCpuCore;
     if(!IsWhiteCpu() || core<0 || core>=static_cast<int>(m_cpuCoreRects.size()) || core>=static_cast<int>(m_snapshot.cpuCoreUsage.size())) return;
     const auto& r=m_cpuCoreRects[core];
@@ -5334,7 +5693,12 @@ void ProDashboardWindow::DrawCpuCorePeek(ID2D1DCRenderTarget* rt) {
     swprintf_s(value,L"%d",core);text(value,x+75,76,y+22,16,22,DWRITE_FONT_WEIGHT_MEDIUM,0x192739);
 }
 
-void ProDashboardWindow::DrawWhiteSensorDetails(ID2D1DCRenderTarget* rt) {
+/**
+ * 绘制传感器详情内容；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawWhiteSensorDetails(ID2D1RenderTarget* rt) {
     auto* dw=m_renderer.GetDWriteFactory();
     const auto primary=D2D1::ColorF(0x192739),muted=D2D1::ColorF(0x53657A);
     const auto red=D2D1::ColorF(0xBC5648),border=D2D1::ColorF(0xDDE3EB),subtle=D2D1::ColorF(0x64748B);
@@ -5441,10 +5805,16 @@ void ProDashboardWindow::DrawWhiteSensorDetails(ID2D1DCRenderTarget* rt) {
     }
 }
 
+/**
+ * 在当前快照中查找所选设备；返回借用指针，快照变化后不能长期保留。
+ */
 const PhysicalDiskInfo* ProDashboardWindow::SelectedDisk() const {
     for(const auto& disk:m_snapshot.physicalDisks)if(disk.id==m_selectedDiskId)return &disk;
     return nullptr;
 }
+/**
+ * 对照新快照校正设备选择，处理设备缺失及重新出现。
+ */
 void ProDashboardWindow::ReconcileDiskSelection() {
     if(const auto* selected=SelectedDisk()){m_diskDisconnected=false;m_lastDiskModel=selected->model;m_lastDiskId=selected->id;}
     else if(!m_lastDiskId.empty()&&m_selectedDiskId==m_lastDiskId){m_diskDisconnected=true;m_diskMenuOpen=false;return;}
@@ -5456,7 +5826,12 @@ void ProDashboardWindow::ReconcileDiskSelection() {
     m_diskMenuFocus=std::clamp(m_diskMenuFocus,0,std::max(0,static_cast<int>(m_snapshot.physicalDisks.size())-1));
     m_diskMenuFirst=std::clamp(m_diskMenuFirst,0,std::max(0,static_cast<int>(m_snapshot.physicalDisks.size())-5));
 }
-void ProDashboardWindow::DrawWhiteDisconnectedDisk(ID2D1DCRenderTarget* rt) {
+/**
+ * 绘制所选磁盘断开时的说明，避免把旧设备数据当实时读数。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawWhiteDisconnectedDisk(ID2D1RenderTarget* rt) {
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;rt->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF),&brush);if(!brush)return;
     m_overviewVisuals.Shadow(rt,D2D1::RectF(0,0,360,205),20,24,0,8,.07f);
     auto panel=D2D1::RoundedRect(D2D1::RectF(.5f,.5f,359.5f,204.5f),19.5f,19.5f);
@@ -5477,6 +5852,10 @@ void ProDashboardWindow::DrawWhiteDisconnectedDisk(ID2D1DCRenderTarget* rt) {
     m_diskTriggerRect=D2D1::RectF(11,183,150,200);
     text(L"切换磁盘  ›",m_diskTriggerRect,11,17,DWRITE_FONT_WEIGHT_BOLD,0x266BCE);
 }
+/**
+ * 处理磁盘选择菜单的键盘导航与确认/取消。
+ * @param key 虚拟键码，用于键盘导航或快捷键。
+ */
 bool ProDashboardWindow::OnDiskKey(UINT key) {
     if(!m_diskMenuOpen)return false;
     const int count=static_cast<int>(m_snapshot.physicalDisks.size());
@@ -5492,7 +5871,12 @@ bool ProDashboardWindow::OnDiskKey(UINT key) {
     if(m_diskMenuFocus>=m_diskMenuFirst+m_diskMenuRows)m_diskMenuFirst=m_diskMenuFocus-m_diskMenuRows+1;
     Render();return true;
 }
-void ProDashboardWindow::DrawWhiteDiskDetails(ID2D1DCRenderTarget* rt) {
+/**
+ * 绘制磁盘详情内容；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawWhiteDiskDetails(ID2D1RenderTarget* rt) {
     ReconcileDiskSelection();const auto* selected=SelectedDisk();
     const auto& volumes=selected ? selected->volumes : m_snapshot.disks;
     const auto& reads=selected ? selected->readHistory : m_snapshot.diskReadHistory;
@@ -5633,7 +6017,12 @@ void ProDashboardWindow::DrawWhiteDiskDetails(ID2D1DCRenderTarget* rt) {
     }
 }
 
-void ProDashboardWindow::DrawWhiteMemoryDirect(ID2D1DCRenderTarget* rt) {
+/**
+ * 绘制内存独立详情页；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawWhiteMemoryDirect(ID2D1RenderTarget* rt) {
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
     rt->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF),&brush);if(!brush) return;
     m_overviewVisuals.Shadow(rt,D2D1::RectF(0,0,360,387),20,24,0,8,.07f);
@@ -5645,7 +6034,13 @@ void ProDashboardWindow::DrawWhiteMemoryDirect(ID2D1DCRenderTarget* rt) {
     rt->SetTransform(D2D1::Matrix3x2F::Translation(0,-113)*original);
     DrawWhiteMemoryDetails(rt,true);rt->SetTransform(original);
 }
-void ProDashboardWindow::DrawWhiteMemoryDetails(ID2D1DCRenderTarget* rt, bool standalone) {
+/**
+ * 绘制内存详情内容；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param standalone 是否按独立卡片布局绘制。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawWhiteMemoryDetails(ID2D1RenderTarget* rt, bool standalone) {
     auto* dw=m_renderer.GetDWriteFactory();
     const auto primary=D2D1::ColorF(0x192739),muted=D2D1::ColorF(0x53657A);
     const auto gold=D2D1::ColorF(0xA87517),blue=D2D1::ColorF(0x2278A1),border=D2D1::ColorF(0xDDE3EB);
@@ -5756,7 +6151,12 @@ void ProDashboardWindow::DrawWhiteMemoryDetails(ID2D1DCRenderTarget* rt, bool st
     if(m_snapshot.topMemoryProcesses.empty()) text(L"暂无进程数据",D2D1::RectF(24,429,338,446),11,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
 }
 
-void ProDashboardWindow::DrawWhiteGpuDetails(ID2D1DCRenderTarget* rt) {
+/**
+ * 绘制GPU详情内容；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawWhiteGpuDetails(ID2D1RenderTarget* rt) {
     auto* dw=m_renderer.GetDWriteFactory();
     const auto primary=D2D1::ColorF(0x192739),muted=D2D1::ColorF(0x53657A);
     const auto purple=D2D1::ColorF(0x8259C2),border=D2D1::ColorF(0xDDE3EB);
@@ -5865,7 +6265,12 @@ void ProDashboardWindow::DrawWhiteGpuDetails(ID2D1DCRenderTarget* rt) {
     if(m_snapshot.topGpuProcesses.empty()) text(L"暂无进程数据",D2D1::RectF(24,390,338,407),11,17,DWRITE_FONT_WEIGHT_NORMAL,muted);
 }
 
-void ProDashboardWindow::DrawWhiteNetworkDirect(ID2D1DCRenderTarget* rt) {
+/**
+ * 绘制网络独立详情页；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawWhiteNetworkDirect(ID2D1RenderTarget* rt) {
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
     rt->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF),&brush);if(!brush) return;
     m_overviewVisuals.Shadow(rt,D2D1::RectF(0,0,360,301),20,24,0,8,.07f);
@@ -5878,7 +6283,13 @@ void ProDashboardWindow::DrawWhiteNetworkDirect(ID2D1DCRenderTarget* rt) {
     DrawWhiteNetworkDetails(rt,true);rt->SetTransform(original);
     m_netChartRect.top-=182;m_netChartRect.bottom-=182;
 }
-void ProDashboardWindow::DrawWhiteNetworkDetails(ID2D1DCRenderTarget* rt, bool standalone) {
+/**
+ * 绘制网络详情内容；从窗口快照和设置取值，调用绘图库生成画面。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param standalone 是否按独立卡片布局绘制。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawWhiteNetworkDetails(ID2D1RenderTarget* rt, bool standalone) {
     auto* dw=m_renderer.GetDWriteFactory();
     const auto primary=D2D1::ColorF(0x192739),muted=D2D1::ColorF(0x53657A);
     const auto green=D2D1::ColorF(0x138873),blue=D2D1::ColorF(0x266BCE);
@@ -6006,7 +6417,12 @@ void ProDashboardWindow::DrawWhiteNetworkDetails(ID2D1DCRenderTarget* rt, bool s
     }
 }
 
-void ProDashboardWindow::DrawMotionBody(ID2D1DCRenderTarget* rt) {
+/**
+ * 按动画插值布局绘制模块，透明度和裁剪控制内容过渡。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawMotionBody(ID2D1RenderTarget* rt) {
     const auto& layout=m_panelMotion.current;
     D2D1_MATRIX_3X2_F original;rt->GetTransform(&original);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;rt->CreateSolidColorBrush(D2D1::ColorF(0xF7F9FC),&b);if(!b)return;
@@ -6064,7 +6480,12 @@ void ProDashboardWindow::DrawMotionBody(ID2D1DCRenderTarget* rt) {
     m_cpuCoreRects.clear();m_netChartRect={};m_diskTriggerRect={};m_diskOptionRects.clear();
 }
 
-void ProDashboardWindow::DrawWhiteOverview(ID2D1DCRenderTarget* rt) {
+/**
+ * 组合纯白概览的头部、概要与展开详情，布局状态决定模块位置。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawWhiteOverview(ID2D1RenderTarget* rt) {
     using namespace ProOverviewLayout;
     const bool cpuExpanded = m_expandedModule == Module_CPU;
     const bool netExpanded = m_expandedModule == Module_Network;
@@ -6258,13 +6679,20 @@ void ProDashboardWindow::DrawWhiteOverview(ID2D1DCRenderTarget* rt) {
     if(cpuExpanded&&!m_panelMotion.active) DrawCpuCorePeek(rt);
 }
 
-void ProDashboardWindow::DrawScrolledSurface(ID2D1DCRenderTarget* rt,const std::function<void()>& draw) {
+/**
+ * 为内容设置滚动变换和裁剪，结束时恢复绘图状态。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
+void ProDashboardWindow::DrawScrolledSurface(ID2D1RenderTarget* rt,const std::function<void()>& draw) {
     if(m_cpuFullHeight<=m_dipHeight+.1f){draw();return;}
     const float visible=m_dipHeight,natural=m_cpuFullHeight;
     const float top=m_mode==Mode_Settings ? 70.f : 33.f;
     const float bottom=m_mode==Mode_DirectTemp ? 27.f : 5.f;
     D2D1_MATRIX_3X2_F original;rt->GetTransform(&original);
     m_overviewVisuals.Shadow(rt,D2D1::RectF(0,0,360,visible),20,24,0,8,.07f);
+    // lambda 捕获当前绘图状态，分区域裁剪并平移内容；每个 pass 恢复原变换。
+    // 暂时使用自然高度绘内容，再恢复可见高度，使滚动不会改变内容布局本身。
     auto pass=[&](D2D1_RECT_F clip,float offset){rt->SetTransform(original);rt->PushAxisAlignedClip(clip,D2D1_ANTIALIAS_MODE_ALIASED);rt->SetTransform(D2D1::Matrix3x2F::Translation(0,offset)*original);m_dipHeight=natural;draw();m_dipHeight=visible;rt->SetTransform(original);rt->PopAxisAlignedClip();};
     pass(D2D1::RectF(0,0,360,top),0);
     pass(D2D1::RectF(0,top,360,visible-bottom),-m_cpuScroll);
@@ -6280,8 +6708,45 @@ void ProDashboardWindow::DrawScrolledSurface(ID2D1DCRenderTarget* rt,const std::
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> border;rt->CreateSolidColorBrush(D2D1::ColorF(0xDDE3EB),&border);
     if(border)rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(.5f,.5f,359.5f,visible-.5f),19.5f,19.5f),border.Get(),1);
 }
+// 合并密集交互的重绘请求，避免每条鼠标消息都完整画一帧。
+/**
+ * 把密集交互合并为一次后续重绘请求，降低重复绘图成本。
+ */
+void ProDashboardWindow::RequestInteractionRender() {
+    // Mouse input updates state immediately; draw the latest state once per tick.
+    if(m_interactionRenderPending)return;
+    // 定时器 74 延迟约 16ms 执行交互重绘；它是合并请求，不保证精确 60fps。
+    if(m_hwnd && SetTimer(m_hwnd,74,16,nullptr))m_interactionRenderPending=true;
+    else Render();
+}
+
+/**
+ * 提交滑块积累的设置变化，避免每个鼠标位置都重复持久化。
+ */
+void ProDashboardWindow::CommitSliderSettings() {
+    if(!m_sliderSettingsDirty)return;
+    m_sliderSettingsDirty=false;
+    if(m_onSettingsChanged)m_onSettingsChanged(m_settings);
+}
+
+/**
+ * 按当前状态绘制并提交一帧；数据来自已保存快照，绘图不等于重新采集硬件。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void ProDashboardWindow::Render() {
-    ID2D1DCRenderTarget* rt = m_renderer.BeginDraw();
+    if(m_visible&&m_hwnd)KillTimer(m_hwnd,75);
+    if(m_graphicsSuspended){
+        if(!m_visible)return;
+        if(!m_renderer.Initialize(m_hwnd,m_pixelWidth,m_pixelHeight))return;
+        m_graphicsSuspended=false;
+        m_memoryRenderLogged=false;
+    }
+    pcinfo::diagnostics::MemoryScope memory(m_memoryRenderLogged ? nullptr : "dashboard.first-render.ready");
+    if(!m_memoryRenderLogged)pcinfo::diagnostics::MemoryEvent("dashboard.first-render.begin");
+    m_memoryRenderLogged=true;
+    if(m_interactionRenderPending){KillTimer(m_hwnd,74);m_interactionRenderPending=false;}
+    pcinfo::diagnostics::Scope perfScope("ProDashboardWindow::Render");
+    ID2D1RenderTarget* rt = m_renderer.BeginDraw();
     if (!rt) return;
 
     EnsureBrushes(rt);
@@ -6406,6 +6871,9 @@ void ProDashboardWindow::Render() {
     m_renderer.EndDraw();
 }
 
+/**
+ * 按当前页面及命中区域分发点击；绘图记录的矩形与这里的坐标要一致。
+ */
 void ProDashboardWindow::OnClick(float x, float y) {
     if(IsDisconnectedDisk()) {
         if(x>=11&&x<150&&y>=183&&y<200) {
@@ -6614,10 +7082,13 @@ void ProDashboardWindow::OnClick(float x, float y) {
     }
 }
 
+/**
+ * 更新悬停、拖动或滑块状态，必要时请求重绘。
+ */
 void ProDashboardWindow::OnMouseMove(float x, float y) {
     if(m_diskMenuOpen) {
         int hovered=-1;for(size_t i=0;i<m_diskOptionRects.size();++i) {const auto& r=m_diskOptionRects[i];if(x>=r.left&&x<r.right&&y>=r.top&&y<r.bottom)hovered=m_diskMenuFirst+static_cast<int>(i);}
-        if(hovered!=m_diskMenuHover) {m_diskMenuHover=hovered;Render();}return;
+        if(hovered!=m_diskMenuHover) {m_diskMenuHover=hovered;RequestInteractionRender();}return;
     }
     bool needRedraw = false;
     const int core=HitCpuCore(x,y);
@@ -6629,15 +7100,15 @@ void ProDashboardWindow::OnMouseMove(float x, float y) {
             float inW = 338.0f;
             m_settings.glassOpacity = .1f+.9f*std::clamp((x-18)/324,0.f,1.f);
             ReleaseBrushes();
-            if (m_onSettingsChanged) m_onSettingsChanged(m_settings);
-            Render();
+            m_sliderSettingsDirty = true;
+            RequestInteractionRender();
             return;
         }
         bool doneHover = (x >= m_settingsDoneRect.left && x <= m_settingsDoneRect.right &&
                           y >= m_settingsDoneRect.top && y <= m_settingsDoneRect.bottom);
         if (doneHover != m_settingsDoneHover) {
             m_settingsDoneHover = doneHover;
-            Render();
+            RequestInteractionRender();
         }
         return;
     }
@@ -6668,7 +7139,7 @@ void ProDashboardWindow::OnMouseMove(float x, float y) {
             }
         }
 
-        if (needRedraw) Render();
+        if (needRedraw) RequestInteractionRender();
         return;
     }
 
@@ -6691,7 +7162,7 @@ void ProDashboardWindow::OnMouseMove(float x, float y) {
             }
         }
 
-        if (needRedraw) Render();
+        if (needRedraw) RequestInteractionRender();
         return;
     }
 
@@ -6735,10 +7206,17 @@ void ProDashboardWindow::OnMouseMove(float x, float y) {
     }
 
     if (needRedraw) {
-        Render();
+        RequestInteractionRender();
     }
 }
 
+/**
+ * Win32 窗口过程：按消息类型分发交互；用窗口用户数据关联 C++ 实例。
+ * @param hwnd Win32 窗口句柄，不是 C++ 对象地址。
+ * @param msg 窗口消息编号，决定后续分支。
+ * @param wParam 消息附加参数，含义随 msg 改变。
+ * @param lParam 消息附加参数，鼠标坐标等需按消息格式解码。
+ */
 LRESULT CALLBACK ProDashboardWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     ProDashboardWindow* pThis = nullptr;
     if (msg == WM_NCCREATE) {
@@ -6752,9 +7230,11 @@ LRESULT CALLBACK ProDashboardWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam,
     if (!pThis) return DefWindowProcW(hwnd, msg, wParam, lParam);
 
     switch (msg) {
-    case WM_TIMER:if(wParam==73){pThis->TickPanelMotion();return 0;}break;
+    // 定时器消息：wParam 是定时器 ID，不同 ID 对应采样、动画或资源回收。
+    case WM_TIMER:if(wParam==75){pThis->ReleaseDormantGraphics();return 0;}if(wParam==74){KillTimer(hwnd,74);pThis->m_interactionRenderPending=false;if(pThis->m_visible)pThis->Render();return 0;}if(wParam==73){pThis->TickPanelMotion();return 0;}break;
     case WM_APP+41:pThis->OnOutsideClick();return 0;
     case WM_CLOSE:pThis->Hide();return 0;
+    // 显示器 DPI 变化：更新比例和尺寸，避免沿用原屏像素布局。
     case WM_DPICHANGED:
         pThis->CancelPanelMotion();
         if(pThis->IsPureWhite()) {
@@ -6763,6 +7243,7 @@ LRESULT CALLBACK ProDashboardWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam,
         }
         break;
     case WM_SYSKEYDOWN:
+    // 键盘按下：wParam 为虚拟键码，处理导航/快捷键而非文字输入。
     case WM_KEYDOWN:
         if(pThis->OnGeneralKey(static_cast<UINT>(wParam),(GetKeyState(VK_SHIFT)&0x8000)!=0,(GetKeyState(VK_MENU)&0x8000)!=0))return 0;
         if(pThis->OnMonitoringKey(static_cast<UINT>(wParam),(GetKeyState(VK_SHIFT)&0x8000)!=0,(GetKeyState(VK_MENU)&0x8000)!=0))return 0;
@@ -6778,6 +7259,7 @@ LRESULT CALLBACK ProDashboardWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam,
         if(msg==WM_DISPLAYCHANGE||(msg==WM_SETTINGCHANGE&&wParam==SPI_SETWORKAREA)){pThis->CancelPanelMotion();pThis->m_cpuPlacementValid=false;pThis->UpdateDimensionsAndPosition();if(pThis->m_visible)pThis->Render();return 0;}
         if(pThis->m_settings.themeMode==3) {pThis->CancelPanelMotion();pThis->ReleaseBrushes();pThis->UpdateDimensionsAndPosition();if(pThis->m_onSettingsChanged)pThis->m_onSettingsChanged(pThis->m_settings);pThis->Render();}
         break;
+    // 滚轮消息：滚动增量与坐标打包在消息参数中，需要按 Win32 格式解析。
     case WM_MOUSEWHEEL:
         if(pThis->m_diskMenuOpen) {pThis->OnDiskKey(GET_WHEEL_DELTA_WPARAM(wParam)>0 ? VK_UP : VK_DOWN);return 0;}
         if(pThis->IsPureWhite()||pThis->m_mode==Mode_Settings) {pThis->ScrollCpu(-GET_WHEEL_DELTA_WPARAM(wParam)*34.f/WHEEL_DELTA);return 0;}
@@ -6799,6 +7281,7 @@ LRESULT CALLBACK ProDashboardWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam,
         }
         return HTCLIENT;
     }
+    // 左键按下：记录命中项或拖动起点；按下与松开是不同事件。
     case WM_LBUTTONDOWN: {
         int px = GET_X_LPARAM(lParam);
         int py = GET_Y_LPARAM(lParam);
@@ -6813,18 +7296,20 @@ LRESULT CALLBACK ProDashboardWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam,
             float inW = 388.0f;
             pThis->m_settings.glassOpacity = .1f+.9f*std::clamp((dipX-18)/324,0.f,1.f);
             pThis->ReleaseBrushes();
-            if (pThis->m_onSettingsChanged) pThis->m_onSettingsChanged(pThis->m_settings);
-            pThis->Render();
+            pThis->m_sliderSettingsDirty = true;
+            pThis->RequestInteractionRender();
             return 0;
         }
         pThis->OnClick(dipX, dipY);
         return 0;
     }
 
+    // 左键松开：完成拖动或确认点击，并结束鼠标捕获状态。
     case WM_LBUTTONUP: {
         if(pThis->m_indicatorDragging>=0){pThis->m_indicatorDragging=-1;ReleaseCapture();if(pThis->m_onSettingsChanged)pThis->m_onSettingsChanged(pThis->m_settings);pThis->Render();return 0;}
         if (pThis->m_sliderDragging) {
             pThis->m_sliderDragging = false;
+            pThis->CommitSliderSettings();
             ReleaseCapture();
             pThis->Render();
             return 0;
@@ -6835,8 +7320,10 @@ LRESULT CALLBACK ProDashboardWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam,
     case WM_CAPTURECHANGED:
         if(pThis->m_indicatorDragging>=0){pThis->m_indicatorDragging=-1;if(pThis->m_onSettingsChanged)pThis->m_onSettingsChanged(pThis->m_settings);}
         pThis->m_sliderDragging=false;
+        pThis->CommitSliderSettings();
         return 0;
 
+    // 鼠标移动消息，客户区坐标以像素给出；绘图命中前注意 DPI 和滚动偏移。
     case WM_MOUSEMOVE: {
         int px = GET_X_LPARAM(lParam);
         int py = GET_Y_LPARAM(lParam);
@@ -6848,6 +7335,7 @@ LRESULT CALLBACK ProDashboardWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam,
         return 0;
     }
 
+    // 鼠标离开客户区：清除悬停状态，避免高亮或提示卡残留。
     case WM_MOUSELEAVE:
         pThis->m_hoveredCpuCore=-1;
         pThis->m_hoveredModule = -1;
@@ -6873,7 +7361,11 @@ LRESULT CALLBACK ProDashboardWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam,
         }
         return 0;
 
+    // 窗口销毁：按该窗口角色清理状态；只有应用主窗口应结束应用循环。
     case WM_DESTROY:
+        KillTimer(hwnd,75);
+        KillTimer(hwnd,74);pThis->m_interactionRenderPending=false;
+        pThis->CommitSliderSettings();
         pThis->CancelPanelMotion();
         pThis->WatchOutsideClicks(false);
         return 0;

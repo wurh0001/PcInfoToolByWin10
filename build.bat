@@ -9,13 +9,13 @@ if exist "%VS_DIR%\VC\Auxiliary\Build\vcvarsall.bat" (
     exit /b 1
 )
 
-cmake -S . -B build/cmake -G "Visual Studio 17 2022" -A x64
+cmake -S . -B build/cache/main -G "Visual Studio 17 2022" -A x64
 if %ERRORLEVEL% NEQ 0 (
     echo [Error] CMake configuration failed!
     exit /b %ERRORLEVEL%
 )
 
-cmake --build build/cmake --config Release
+cmake --build build/cache/main --config Release
 if %ERRORLEVEL% NEQ 0 (
     echo [Error] Build failed!
     exit /b %ERRORLEVEL%
@@ -26,6 +26,6 @@ echo ==========================================================
 echo [Success] All targets built successfully:
 echo   - Lite (Minimal):  build\Release\PcInfoTool-Lite.exe
 echo   - Pro  (Stats):    build\Release\PcInfoTool-Pro.exe
-echo   - Test Suite:      build\Release\test_performance.exe
+echo   - Test Suite:      build\test-tools\test_performance.exe
 echo ==========================================================
 endlocal

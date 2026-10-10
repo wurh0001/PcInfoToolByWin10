@@ -1,3 +1,10 @@
+/*
+ * 模块说明：Pro 主悬浮条运行流程
+ * 读取配置并注册设置回调；定时获取快照；点击指标打开对应详情，鼠标悬停显示提示。
+ * 拖动时只移动已有画面，减少重绘；隐藏或未创建的页面不必每轮更新绘图资源。
+ */
+#include "core/diagnostics/PerformanceTrace.h"
+#include "ui/platform/ReadOnlyInput.h"
 #include "pro/windows/ProMiniBarWindow.h"
 #include "pro/windows/ProDashboardWindow.h"
 #include "pro/windows/ProMiniBarTooltipWindow.h"
@@ -43,6 +50,20 @@ ProMiniBarWindow::ProMiniBarWindow() {
     }
 }
 
+// 拖动只改变位置；内容不变时不重绘，避免鼠标消息频率放大绘图成本。
+/**
+ * 根据屏幕鼠标位移移动悬浮条，避免位置变化触发完整重绘。
+ */
+void ProMiniBarWindow::MoveDragTo(POINT cursor) {
+    if(!m_isDragging)return;
+    pcinfo::diagnostics::Scope perfScope("ProMiniBarWindow::DragMove");
+    RECT window{};if(!GetWindowRect(m_hwnd,&window))return;
+    const int dx=cursor.x-m_ptDown.x,dy=cursor.y-m_ptDown.y;
+    m_ptDown=cursor;
+    if(!dx&&!dy)return;
+    SetWindowPos(m_hwnd,nullptr,window.left+dx,window.top+dy,0,0,SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOZORDER);
+    if(m_pDashboard&&m_pDashboard->IsVisible())m_pDashboard->FollowBar(GetWindowRectDip(),m_dpiScale);
+}
 ProMiniBarWindow::~ProMiniBarWindow() {
     SavePosition();m_hotkeyBinding.Clear();
     m_collector.Stop();
@@ -57,6 +78,9 @@ ProMiniBarWindow::~ProMiniBarWindow() {
     }
 }
 
+/**
+ * 释放当前绘图目标关联的画笔和相应资源，清空指针以便下次重新创建。
+ */
 void ProMiniBarWindow::ReleaseBrushes() {
     auto SafeRelease = [](auto** pp) {
         if (*pp) { (*pp)->Release(); *pp = nullptr; }
@@ -76,6 +100,10 @@ void ProMiniBarWindow::ReleaseBrushes() {
     SafeRelease(&m_pHoverPillBorder);
 }
 
+/**
+ * 首次使用或重建目标后创建画笔，已有可用资源时复用。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ */
 void ProMiniBarWindow::EnsureBrushes(ID2D1DCRenderTarget* rt) {
     if (m_pBgBrush) return;
 
@@ -108,6 +136,9 @@ void ProMiniBarWindow::EnsureBrushes(ID2D1DCRenderTarget* rt) {
     rt->CreateSolidColorBrush(D2D1::ColorF(0.761f, 0.796f, 0.851f, 0.80f), &m_pHoverPillBorder);
 }
 
+/**
+ * 返回用于详情定位的悬浮条锚点矩形；使用前注意实现中的屏幕坐标约定。
+ */
 RECT ProMiniBarWindow::GetWindowRectDip() const {
     RECT rc = { 0, 0, 0, 0 };
     if (m_hwnd) {
@@ -120,6 +151,9 @@ RECT ProMiniBarWindow::GetWindowRectDip() const {
     return rc;
 }
 
+/**
+ * 创建窗口及其必要资源；成功返回 true，失败由调用方处理，不等于开始消息循环。
+ */
 bool ProMiniBarWindow::Create() {
     WNDCLASSEXW wc = { sizeof(WNDCLASSEXW) };
     wc.lpfnWndProc = WndProc;
@@ -161,17 +195,17 @@ bool ProMiniBarWindow::Create() {
     );
 
     if (!m_hwnd) return false;
+    DisableReadOnlyWindowIme(m_hwnd);
 
     if (!m_renderer.Initialize(m_hwnd, m_pixelWidth, m_pixelHeight)) {
         return false;
     }
 
     if (m_pDashboard) {
-        m_pDashboard->Create();
         m_pDashboard->SetBarOwner(m_hwnd);m_pDashboard->SetAnchorDpi(m_dpiScale);
     }
     if (m_pTooltip) {
-        m_pTooltip->Create(m_hwnd);
+        m_pTooltip->SetOwner(m_hwnd);
         m_pTooltip->SetAlwaysOnTop(general.alwaysOnTop);
         if (m_pDashboard) {
             m_pTooltip->SetPureWhite(m_pDashboard->IsPureWhite());
@@ -188,15 +222,16 @@ bool ProMiniBarWindow::Create() {
     ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
     OnTimer();
 
-    if (m_pDashboard) {
-        m_pDashboard->ShowNear(GetWindowRectDip());
-    }
+    // Start with the bar only; detail surfaces are created on first use.
     m_positionDirty=true;
     PollFullscreen();
 
     return true;
 }
 
+/**
+ * 应用窗口行为和快捷键等常规设置，把失败原因交回设置页面。
+ */
 bool ProMiniBarWindow::ApplyGeneralChange(ProGeneralSettings& value,std::wstring& error) {
     const auto& old=m_pDashboard->GetSettings().general;
     if(value.hotkeyKey!=old.hotkeyKey||value.hotkeyModifiers!=old.hotkeyModifiers){if(!m_hotkeyBinding.Set(m_hwnd,value.hotkeyModifiers,value.hotkeyKey,error))return false;}
@@ -211,15 +246,24 @@ bool ProMiniBarWindow::ApplyGeneralChange(ProGeneralSettings& value,std::wstring
     if(value.rememberPosition){CapturePosition(value);}else value.positionValid=false;
     error.clear();return true;
 }
+/**
+ * 记录窗口当前位置和 DPI 到设置结构，供以后恢复。
+ */
 void ProMiniBarWindow::CapturePosition(ProGeneralSettings& value) const {
     if(!m_hwnd)return;RECT rect{};if(!GetWindowRect(m_hwnd,&rect))return;
     value.positionX=rect.left+static_cast<int>(std::lround(kShadowApron*m_dpiScale));value.positionY=rect.top+static_cast<int>(std::lround(kShadowApron*m_dpiScale));value.savedDpi=static_cast<int>(std::lround(m_dpiScale*96));value.positionValid=true;
 }
+/**
+ * 依据记忆位置开关保存窗口位置，避免无条件覆盖用户配置。
+ */
 void ProMiniBarWindow::SavePosition() {
     if(!m_hwnd||!m_pDashboard)return;auto value=m_pDashboard->GetSettings().general;
     if(!value.rememberPosition||!m_positionDirty)return;CapturePosition(value);m_pDashboard->SetGeneral(value);
     const bool saved=ConfigManager::SaveProGeneral(value);m_pDashboard->SetAppearanceSaveFailed(!saved);m_positionDirty=!saved;
 }
+/**
+ * 根据应用可见状态和全屏隐藏规则更新实际窗口显示。
+ */
 void ProMiniBarWindow::ApplyVisibility() {
     if(!m_hwnd)return;const bool show=!m_userHidden&&!m_fullscreenHidden;
     if(!show){
@@ -230,6 +274,9 @@ void ProMiniBarWindow::ApplyVisibility() {
         m_restoreDashboard=false;
     }
 }
+/**
+ * 检查前台窗口是否覆盖显示器，更新全屏隐藏状态。
+ */
 void ProMiniBarWindow::PollFullscreen() {
     if(!m_hwnd||!m_pDashboard)return;
     const HWND foreground=GetForegroundWindow();if(foreground!=m_fullscreenOverride)m_fullscreenOverride=nullptr;
@@ -248,6 +295,9 @@ void ProMiniBarWindow::PollFullscreen() {
     }
     m_fullscreenHidden=fullscreen;ApplyVisibility();
 }
+/**
+ * 切换应用可见状态，用于全局快捷键入口。
+ */
 void ProMiniBarWindow::ToggleAppVisibility() {
     if(!m_hwnd)return;
     if(m_userHidden||m_fullscreenHidden){m_userHidden=false;m_fullscreenOverride=GetForegroundWindow();m_fullscreenHidden=false;m_restoreDashboard=false;}
@@ -255,6 +305,9 @@ void ProMiniBarWindow::ToggleAppVisibility() {
     ApplyVisibility();
 }
 
+/**
+ * 进入 GetMessage/DispatchMessage 消息循环；收到退出消息后返回。
+ */
 void ProMiniBarWindow::Run() {
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0)) {
@@ -263,6 +316,10 @@ void ProMiniBarWindow::Run() {
     }
 }
 
+// UI 读取后台采集的数据副本，再更新可见页面；此处不直接查询传感器。
+/**
+ * 定时读取最新数据并更新可见窗口，同时处理该窗口的周期性状态。
+ */
 void ProMiniBarWindow::OnTimer() {
     m_snapshot = m_collector.GetLatestSnapshot();
     if (m_pDashboard && m_pDashboard->IsVisible()) {
@@ -274,6 +331,9 @@ void ProMiniBarWindow::OnTimer() {
     Render();
 }
 
+/**
+ * 依据悬停指标显示只读提示卡，拖动或详情显示时按规则隐藏。
+ */
 void ProMiniBarWindow::ShowHoverPeek() {
     if (!m_pTooltip) return;
     if (m_isDragging || m_hoveredSegment < 0 || m_hoveredSegment > 3 || !m_pDashboard || m_pDashboard->IsVisible()) {
@@ -288,6 +348,9 @@ void ProMiniBarWindow::ShowHoverPeek() {
     m_pTooltip->Show(m_hoveredSegment, bar, m_snapshot, m_dpiScale);
 }
 
+/**
+ * 依据当前显示模式展开或收起概览，保持悬浮条状态同步。
+ */
 void ProMiniBarWindow::ToggleDashboard() {
     if (m_pTooltip) {
         m_pTooltip->Hide();
@@ -302,6 +365,9 @@ void ProMiniBarWindow::ToggleDashboard() {
     Render();
 }
 
+/**
+ * 把悬浮条分段索引映射为独立详情或概览的打开操作。
+ */
 void ProMiniBarWindow::OnSegmentClick(int segmentIndex) {
     if (m_pTooltip) {
         m_pTooltip->Hide();
@@ -333,6 +399,12 @@ void ProMiniBarWindow::OnSegmentClick(int segmentIndex) {
     Render();
 }
 
+/**
+ * 绘制CPU图标；x/y 指定局部位置，brush 提供颜色，几何图形组合成符号。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param brush 借用的颜色画笔，不转移所有权。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void ProMiniBarWindow::DrawCpuIcon(ID2D1DCRenderTarget* rt, float x, float y, ID2D1Brush* brush) {
     // 🌡️ Thermometer vector matching Figma
     float cx = x + 3.5f;
@@ -353,6 +425,11 @@ void ProMiniBarWindow::DrawCpuIcon(ID2D1DCRenderTarget* rt, float x, float y, ID
     rt->DrawLine(D2D1::Point2F(cx, topY + 2.5f), D2D1::Point2F(cx, bulbCy), brush, 1.3f);
 }
 
+/**
+ * 把历史点映射到指定矩形，按最大值缩放并处理无效点。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void ProMiniBarWindow::DrawMiniSparkline(ID2D1DCRenderTarget* rt, float x, float y, float w, float h, const MetricHistory& history, float maxVal, D2D1_COLOR_F color) {
     size_t count = history.Size();
     if (count < 2) {
@@ -419,6 +496,12 @@ void ProMiniBarWindow::DrawMiniSparkline(ID2D1DCRenderTarget* rt, float x, float
     pPath->Release();
 }
 
+/**
+ * 把利用率映射为竖向填充高度，背景表示未使用部分。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param percent 比例数值，绘图前需限制到有效范围。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void ProMiniBarWindow::DrawVerticalMeters(ID2D1DCRenderTarget* rt, float x, float y, float w, float h, float percent, D2D1_COLOR_F activeColor) {
     const int kBarCount = 5;
     float barW = 2.4f;
@@ -441,6 +524,12 @@ void ProMiniBarWindow::DrawVerticalMeters(ID2D1DCRenderTarget* rt, float x, floa
     if (pInactive) pInactive->Release();
 }
 
+/**
+ * 用线段/几何绘制展开箭头，方向由参数或状态决定。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * @param brush 借用的颜色画笔，不转移所有权。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void ProMiniBarWindow::DrawChevron(ID2D1DCRenderTarget* rt, float cx, float cy, float size, bool pointingUp, ID2D1Brush* brush) {
     float half = size * 0.5f;
     if (pointingUp) {
@@ -452,6 +541,11 @@ void ProMiniBarWindow::DrawChevron(ID2D1DCRenderTarget* rt, float cx, float cy, 
     }
 }
 
+/**
+ * 绘制纯白悬浮条的指标、数值和概览入口。
+ * @param rt 借用的 Direct2D 绘图目标；调用方持有其生命周期。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void ProMiniBarWindow::DrawWhiteBar(ID2D1DCRenderTarget* rt) {
     auto* dw = m_renderer.GetDWriteFactory();
     const auto blue = D2D1::ColorF(0x266BCE), amber = D2D1::ColorF(0xA87517);
@@ -539,7 +633,12 @@ void ProMiniBarWindow::DrawWhiteBar(ID2D1DCRenderTarget* rt) {
     rt->SetTransform(transform);
 }
 
+/**
+ * 按当前状态绘制并提交一帧；数据来自已保存快照，绘图不等于重新采集硬件。
+ * 绘图坐标受当前变换/裁剪影响；本函数不是硬件采集入口。
+ */
 void ProMiniBarWindow::Render() {
+    pcinfo::diagnostics::Scope perfScope("ProMiniBarWindow::Render");
     ID2D1DCRenderTarget* rt = m_renderer.BeginDraw();
     if (!rt) return;
 
@@ -736,6 +835,13 @@ void ProMiniBarWindow::Render() {
     m_renderer.EndDraw();
 }
 
+/**
+ * Win32 窗口过程：按消息类型分发交互；用窗口用户数据关联 C++ 实例。
+ * @param hwnd Win32 窗口句柄，不是 C++ 对象地址。
+ * @param msg 窗口消息编号，决定后续分支。
+ * @param wParam 消息附加参数，含义随 msg 改变。
+ * @param lParam 消息附加参数，鼠标坐标等需按消息格式解码。
+ */
 LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     ProMiniBarWindow* pThis = nullptr;
     if (msg == WM_NCCREATE) {
@@ -749,6 +855,20 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
     if (!pThis) return DefWindowProcW(hwnd, msg, wParam, lParam);
 
     switch (msg) {
+    case WM_MOUSEACTIVATE: {
+        pcinfo::diagnostics::MemoryEvent("bar.mouse-activate.begin");
+        pcinfo::diagnostics::ModulesEvent("bar.mouse-activate.begin");
+        pcinfo::diagnostics::MemoryScope memory("bar.mouse-activate.ready");
+        return DefWindowProcW(hwnd,msg,wParam,lParam);
+    }
+    case WM_SETFOCUS: {
+        pcinfo::diagnostics::MemoryEvent("bar.focus.begin");
+        const auto result=DefWindowProcW(hwnd,msg,wParam,lParam);
+        pcinfo::diagnostics::MemoryEvent("bar.focus.ready");
+        pcinfo::diagnostics::ModulesEvent("bar.focus.ready");
+        return result;
+    }
+    // 键盘按下：wParam 为虚拟键码，处理导航/快捷键而非文字输入。
     case WM_KEYDOWN:
         if(wParam==VK_ESCAPE && pThis->m_pDashboard && pThis->m_pDashboard->IsVisible()) {
             pThis->m_pDashboard->CloseTopLayer();return 0;
@@ -758,6 +878,7 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
             SetForegroundWindow(panel);SetFocus(panel);SendMessageW(panel,WM_KEYDOWN,VK_TAB,lParam);return 0;
         }
         break;
+    // 显示器 DPI 变化：更新比例和尺寸，避免沿用原屏像素布局。
     case WM_DPICHANGED: {
         KillTimer(hwnd, 2);
         pThis->m_hoveredSegment = -1;
@@ -799,6 +920,7 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
         const float y = point.y / pThis->m_dpiScale - kShadowApron;
         return (x < 0 || y < 0 || x >= pThis->m_dipWidth || y >= pThis->m_dipHeight) ? HTTRANSPARENT : HTCLIENT;
     }
+    // 定时器消息：wParam 是定时器 ID，不同 ID 对应采样、动画或资源回收。
     case WM_TIMER:
         if(wParam==3){pThis->PollFullscreen();return 0;}
         if (wParam == 2) {
@@ -824,6 +946,7 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
         }
         return 0;
 
+    // 左键按下：记录命中项或拖动起点；按下与松开是不同事件。
     case WM_LBUTTONDOWN: {
         KillTimer(hwnd, 2);
         if (pThis->m_pTooltip) pThis->m_pTooltip->Hide();
@@ -835,6 +958,7 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
         return 0;
     }
 
+    // 鼠标移动消息，客户区坐标以像素给出；绘图命中前注意 DPI 和滚动偏移。
     case WM_MOUSEMOVE: {
         POINT cur;
         GetCursorPos(&cur);
@@ -848,18 +972,7 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 if (pThis->m_pTooltip) pThis->m_pTooltip->Hide();
             }
 
-            RECT rc;
-            GetWindowRect(hwnd, &rc);
-            int newX = rc.left + (cur.x - pThis->m_ptDown.x);
-            int newY = rc.top + (cur.y - pThis->m_ptDown.y);
-            pThis->m_ptDown = cur;
-
-            SetWindowPos(hwnd, nullptr, newX, newY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
-
-            // Follow dashboard position smoothly in lockstep without expensive re-rendering
-            if (pThis->m_pDashboard && pThis->m_pDashboard->IsVisible()) {
-                pThis->m_pDashboard->FollowBar(pThis->GetWindowRectDip(),pThis->m_dpiScale);
-            }
+            pThis->MoveDragTo(cur);
             return 0;
         }
 
@@ -901,6 +1014,7 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
         return 0;
     }
 
+    // 鼠标离开客户区：清除悬停状态，避免高亮或提示卡残留。
     case WM_MOUSELEAVE:
         KillTimer(hwnd, 2);
         pThis->m_mouseHover = false;
@@ -910,6 +1024,7 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
         pThis->Render();
         return 0;
 
+    // 左键松开：完成拖动或确认点击，并结束鼠标捕获状态。
     case WM_LBUTTONUP: {
         if (pThis->m_isDragging) {
             pThis->m_isDragging = false;
@@ -963,6 +1078,7 @@ LRESULT CALLBACK ProMiniBarWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
         return 0;
     }
 
+    // 窗口销毁：按该窗口角色清理状态；只有应用主窗口应结束应用循环。
     case WM_DESTROY:
         pThis->SavePosition();pThis->m_hotkeyBinding.Clear();
         PostQuitMessage(0);
